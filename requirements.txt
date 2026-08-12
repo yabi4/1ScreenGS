@@ -1,0 +1,2 @@
+# Runtime requirement for patch.py
+ndspy>=4.0

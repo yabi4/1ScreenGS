@@ -203,6 +203,7 @@ def cmd_intersect(args):
 # signature (4 bytes) + version (4) + the config block.
 HOOK_VARS = ["pad_held", "pad_new", "prev_pad", "menu_swapped", "last_app",
              "bt_phase", "bt_menu_last", "bt_manual", "bt_system", "bt_drawn",
+             "bt_cursor_off", "bt_have_prev", "bt_lock",
              "dex_last", "dex_mode", "pc_frames", "script_menu", "field_restore",
              "map_frames", "map_pending", "prev_task"]
 

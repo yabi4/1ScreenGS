@@ -68,29 +68,29 @@ the screen back to the world by itself.
 | Dig, Escape Rope, Teleport | the world, not the menu you set off from |
 | Evolution, and any move it teaches | the Pokémon and the narration |
 
-**In battle**, the screen follows what you are doing:
+**In battle**, the scene stays up while you choose. The commands are drawn onto it:
 
 | what is happening | on top |
 |---|---|
 | a turn is resolving | the battle scene |
-| `Que doit faire …?` appears | still the scene, so you can read the result |
-| you press the **D-pad** or **A** | the command menu |
-| ~1 s with no input | back to the scene |
-| you selected something from the menu (move list, bag, party) | the menu stays up |
-| you are browsing the bag or the party | the menu stays up |
+| `Que doit faire …?` appears | the scene, with `ATTAQUE / SAC / FUITE / POKéMON` on it |
+| you move the **D-pad** | the scene; the highlight moves with you |
+| a yes/no question is asked | the scene, with a small `Oui / Non` box |
+| you pick `ATTAQUE` | the move list |
+| you pick `SAC` or `POKéMON` | the bag or the party |
 | you confirm a move | the scene, immediately |
 
-`A` brings the menu up as well as the D-pad, because the cursor starts on `ATTAQUE` — if
-it did not, pressing A straight away would open the move list where you cannot see it.
+The commands sit in the right-hand end of the message window, which is otherwise empty —
+`ATTAQUE` across the top, then `SAC`, `FUITE` and `POKéMON` along the bottom. That is the
+arrangement the game's own cursor moves through, so the highlight tracks the D-pad
+exactly; it starts on `ATTAQUE` because the game's cursor does.
 
-The first `A` only brings the menu up; it does not hold it there. Holding it takes a
-selection made from a menu you can actually see. That is what stops the menu getting
-stuck on screen when you mash A through the battle intro.
+There is no timing anywhere in this. Nothing steps aside after a delay, and no press
+moves the screen out from under you — the screen changes when, and only when, you have
+picked something the game draws on the touch screen.
 
-Pressing **B** to back out of a submenu re-arms the ~1 s timeout, so the menu steps
-aside again once you stop.
-
-The delay is `IDLE_FRAMES` in `src/hook.s` (frames at 60 fps) if you want it different.
+**L + R** still works during a battle. It holds until the menu you are on changes, so
+backing out of the move list hands control back to the patch.
 
 ## Emulator setup (melonDS)
 

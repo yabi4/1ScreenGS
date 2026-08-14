@@ -1,5 +1,50 @@
 # Changelog
 
+## Unreleased — `beta-ui`
+
+Going deeper into single-screen play than rerouting alone allows. Battles only so far.
+
+### The battle command menu is drawn on the battle scene
+
+`ATTAQUE / SAC / FUITE / POKéMON` now sit in the right-hand end of the battle message
+window, which is otherwise empty. The scene never leaves the top screen while you choose,
+the highlight follows the D-pad, and the screen only changes once you have picked
+something the game draws on the touch screen — the move list, the bag, the party.
+
+Binary prompts ("… changer de Pokémon?") get a small `Oui / Non` box in the same window
+instead of taking the screen.
+
+**The ~1 s timeout is gone**, along with the D-pad/A trigger that raised the menu and the
+guessing about intent that came with it. Nothing is timed any more.
+
+### The labels are the game's own words
+
+Pulled out of the ROM being patched and rasterised at patch time
+(`onescreen/labels.py`) — `msg_0197` for the strings, the game's own font for the glyphs.
+A French build says ATTAQUE / SAC / POKéMON / FUITE, an English one FIGHT / BAG / POKéMON
+/ RUN, from the same code. At runtime the hook only copies finished tiles into VRAM the
+game has already allocated: no font, no heap, no call into game code.
+
+### Behaviour fixed along the way
+
+- The bag and party open on the top screen the first time, not the second — they run as
+  overlay 8 and leave the menu id on the root menu, so the overlay id is checked first.
+- The highlight no longer flashes back to `ATTAQUE` when you confirm, or after a trip
+  into the bag: it is frozen at the moment you press A.
+- Mashing A through the battle intro no longer pins the menu, because the game's menu id
+  says no menu is open yet.
+- **L + R** in battle holds until the menu you are on changes, rather than being undone
+  on the next frame.
+
+### Notes
+
+- Region-neutral like the rest: every address is derived from the ROM, and the struct
+  offsets are code-derived so they do not move between regions. Verified against IPGF,
+  IPKF and IPKE.
+- Payload grows from 1452 to 16512 bytes of the ~31 KB of free ITCM.
+- A field yes/no for the overworld's prompts was attempted and abandoned — see
+  `docs/FINDINGS.md` for what was disproved and why.
+
 ## v0.1b — first public release
 
 Playable start to finish on French SoulSilver and HeartGold.

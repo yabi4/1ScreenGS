@@ -373,6 +373,13 @@ including the move list, flipping to `0x06` the instant a command is confirmed. 
 reads `0x07` outside battle, which is harmless because everything is gated on the app
 living in overlay 12.
 
+> **Out of date — read the later section.** This conclusion was reversed. `0x02111930`
+> conflates "command confirmed" with "a sub-screen is open" (both `0x06`), which broke the
+> bag and party. What ships is `0x021D0E28`, rejected above for being too fine-grained and
+> then re-adopted with a *negative* test (`!= 0x07`) rather than a positive one, which is
+> what makes the extra values harmless. See *The battle phase word* below for the account
+> that matches the code.
+
 Also worth recording: **do not try to guess which A press confirms the command.** An
 attempt to fire on "the second A" swapped away from the move list, because the number of
 presses varies with whether the cursor was moved first, backed out with B, or SAC/POKéMON
@@ -389,13 +396,18 @@ comes up only when you reach for it.
 | phase 2 (turn executing) | battle scene, forced |
 | phase 1 entered | unchanged — deliberately no swap |
 | D-pad or A newly pressed | command menu |
-| `IDLE_FRAMES` (120 ≈ 2 s) with no input, uncommitted | battle scene |
+| `IDLE_FRAMES` (60 ≈ 1 s) with no input, uncommitted | battle scene |
 | A pressed | committed: timeout disabled, menu stays |
 
 A is a trigger as well as the D-pad because the cursor starts on ATTAQUE — pressing A
 without moving first would open the move list unseen on the bottom screen.
 
 All five behaviours verified in-game on a live trainer battle.
+
+> **Superseded.** This whole state machine was removed on `beta-ui`. The commands are
+> drawn onto the battle scene now, so there is nothing to raise and nothing to time out —
+> see *Drawing the battle command menu* below. Kept because the reasoning about *when* the
+> screen should move is still the reasoning that applies.
 
 The lesson worth keeping: **three savestates from one battle is not evidence.** 68,535
 bytes passed that test and the one that looked cleanest was still a coincidence.
@@ -997,3 +1009,120 @@ Everything else defaults to FLIP. See `SITE_INTENT` in `onescreen/table.py`.
 - Screenshots via `PrintWindow` with `PW_RENDERFULLCONTENT` work without stealing focus.
   Note the ALT tap used to unlock `SetForegroundWindow` opens melonDS's Qt menu bar —
   send `ESC` afterwards or keystrokes hit the menu instead of the game.
+
+## Drawing the battle command menu
+
+The first thing this project draws rather than reroutes. Everything it needs was found
+statically or measured live; none of it is guessed.
+
+**Where it draws.** The battle message box is already on the main engine, which is what
+makes this cheap — `battleSystem->window[0]`, `GF_BG_LYR_MAIN_1`, tile rect x=2 y=19,
+27×4 tiles, palette 11, baseTile 31. Confirmed three ways: the decomp
+(`asm/overlay_12_022378C0.s:375`), the same `AddWindowParameterized` immediate sequence
+found at three sites in the retail ov12 of all three ROMs, and a live dump mid-battle —
+`BG1CNT` charBase 1, engine-A `DISPCNT` character-base offset 0, so the tiles start at
+`0x06004000 + baseTile*32`. The right-hand columns hold only the "look at the bottom
+screen" icon, which the blit covers.
+
+Palette 11 reads fg 1, shadow 2, paper 15, with a usable salmon accent at 12 — which
+pret's `sFontInfos` (`src/font.c:28`) states independently as `fgColor 1, bgColor 15,
+shadowColor 2`.
+
+**What it draws.** `onescreen/labels.py` pulls the strings out of the ROM being patched
+(`msg_0197` entries 924–927, plus 940/941 for yes/no) and rasterises them with the game's
+own font (`a/0/1/6` file 1, fontId 1). Both are language-neutral, so the build speaks
+whatever the dump speaks. Two gotchas worth keeping: ndspy returns the five font files as
+empty and the archive's own FAT has to be read instead; and the glyph format is 2bpp,
+16×16, most significant pair leftmost, high byte of each u16 first.
+
+**How it knows what is happening.** The battle is an `OverlayManager` app whose
+init/exec/exit are ARM9 wrappers rather than overlay code, so `find_overlay_template`
+needed an `arm9_resident` shape — exactly one match per ROM (FR `0x020FA468`, US
+`0x020FA484`). Its exec hands over the live `BattleSystem` every frame.
+
+| what | where | how it was pinned |
+|---|---|---|
+| `battleInput` | `BattleSystem + 0x19C` | a scan for a word pointing back at `BattleSystem` found `0x19C` at runtime |
+| `curMenuId` | `BattleInput + 0x68B` | literal census (below) |
+| `menuCursor` | `BattleInput + 0x6D4` | same +0x20 shift; learned from the D-pad at runtime as a check |
+
+**The literal census.** pret warns at `battle_input.h:168` that its offsets in this struct
+drift, and they do — by `0x20`. Offsets that large cannot be a Thumb immediate, so every
+access loads them from a literal pool, which makes the pool a census of the struct.
+Scanning ov12's word-aligned literals in `[0x500,0x800)` shows
+
+    0x68a x9   0x68b x6   0x68c x5   0x68d x1   0x68e x3   0x68f x2
+
+six consecutive single-byte offsets — pret's run of six `u8` fields. What confirms the
+alignment rather than merely fitting it is the *gap*: `0x688` and `0x689` are absent
+entirely, and those are the two fields pret calls `unused_668`/`unused_669`. Unreferenced
+fields leave no literals. The same +0x20 lands the cursor on `0x6d4`, corroborated by
+`keyPressed` (`0x6d8`), `tutorial.finger` (`0x6dc`) and the three closing sprite pointers
+(`0x6e4/0x6e8/0x6ec`).
+
+**Menu ids 1..8 are all the root menu**, not just the two the enum names —
+`sBattleMenuTemplates` gives every one of them `BattleInput_CursorMove_MainMenu`, and 3
+and 4 are the "put the menu back up" states you land on after backing out of a submenu.
+Testing only 1 and 2 left the screens swapped with no labels after a trip into the bag.
+
+**Two things the menu id cannot see**, both found by playing:
+
+- The bag and party run as **overlay 8** and leave `curMenuId` on the root menu, so they
+  drew on the bottom screen until the overlay id was checked first.
+- Confirming a choice resets the game's cursor *before* the menu id changes, so the
+  highlight flashed back to FIGHT on the way out. Fixed by freezing the image at the
+  moment A is pressed and holding it across a submenu trip — which is also simply correct,
+  since the game restores the cursor to that same choice.
+
+## Dead end: a yes/no box for the field prompts
+
+Attempted on `beta-ui` and **abandoned**. The goal was the battle treatment for the
+overworld's binary questions — the nurse's "heal your Pokémon?", forget-a-move and so on.
+Recorded in full because the negative results are what cost the time.
+
+**The value was lower than it looked.** When a script menu owns the bottom screen the
+patch already swaps it up, and the buttons read perfectly well there. The only gain would
+have been keeping the world visible. Worth remembering before anyone tries again.
+
+**There is no shared binary-choice system.** `ScrCmd_YesNo` builds a `ListMenu2D` on
+`GF_BG_LYR_MAIN_3` — already the main engine, so those prompts need no work at all. Oak's
+speech has its own (`OakSpeechYesNo_*`). The nurse's green two-button panel is a third
+thing, and it is not decompiled.
+
+What was disproved, in order:
+
+1. **`menu + 0x9B` is the item count.** It is — `MoveTutorMenu_SetListItem_Internal` ends
+   by incrementing it — but it reads 0 at a nurse prompt.
+2. **`menu + 0xB8` is its `ListMenu2D`.** `ov01_021EDE8C` does call
+   `Handle2dMenuInput(menu->[0xB8])` every frame, so the offset is right, but the pointer
+   reached from `ov01_021F6B20`'s chain is not that menu: its first word should be the
+   `FieldSystem` (`ov01_021EDAFC` opens with `str r4, [r6]`) and reads `0x00400000`.
+3. **The nurse uses that menu at all.** A whole-RAM scan of a savestate at the prompt
+   found **no** genuine `ListMenu2D` anywhere, and `ov01_021EDAFC` always builds one.
+4. **A byte found by savestate diff is the selection.** Diffing two states that differed
+   only in which button was highlighted gave exactly one isolated `0↔1` byte in 4 MB. It
+   turned out to sit at a fixed offset inside a **96 KB heap block** (`0x18000` in its
+   header), i.e. a heap offset, not a struct field — stable only while allocation order
+   happens to repeat. A hardware watchpoint on it never fired while the cursor moved,
+   which settled it.
+5. **"A script menu that is not a list menu" identifies a binary prompt.** This one
+   shipped briefly and is the reason to be careful: it fires on any scripted
+   bottom-screen moment that is not a list, including simply switching on the PC.
+
+**What did work**, and is worth reusing: the shop's menu *is* a real `ov01` list menu —
+first word is the `FieldSystem`, item count 3 at `+0x9B` for Buy/Sell/Quit. So shops and
+multi-choice questions can be recognised reliably; it is the touch prompts that cannot.
+
+**Two regressions this caused**, both from drawing before the ground was measured:
+
+- `OneScreen_ScriptMenu` runs every frame *whatever app is on screen*. Harmless while it
+  only touched `POWCNT1`; the moment it drew, it painted over VRAM the PC box and shops
+  had taken for their own graphics. Gate any drawing on the overworld actually running.
+- Walking a pointer chain with only null checks froze the game in a shop. A stale pointer
+  is not null, it is arbitrary, and `ldr` through arbitrary reaches I/O space — reading
+  the IPC FIFO at `0x04100000` pops it and hangs the ARM9. Range-check every link.
+
+**Method note.** Savestates were far more productive than driving the emulator: no
+one-connection-per-launch limit, no navigation timing, and the same query can be re-run
+offline. Three offline queries against a pair of savestates produced more than six live
+runs did. `tools/savestate.py` is the tool; melonDS writes slots as `<rom>.ml1`, `.ml2`.

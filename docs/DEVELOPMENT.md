@@ -33,7 +33,7 @@ loaded the payload to the wrong place.
 ### The config block
 
 The hook does not hardcode the addresses it reads. `OneScreen_Config` at the top of
-`src/hook.s` holds six of them, and the patcher fills it in from the ROM being patched
+`src/hook.s` holds fourteen of them, and the patcher fills it in from the ROM being patched
 (`onescreen/regions.py` → `inject.fill_config`). The defaults compiled into the payload
 are the French values, so an unconfigured payload still works there.
 
@@ -44,7 +44,7 @@ To confirm it landed, read the block over the GDB stub after patching; it sits a
 `OneScreen_Config` address in `hook.json`:
 
 ```bash
-powershell -File tools/probe.ps1 -Addrs "0x01FF8628:6w"
+powershell -File tools/probe.ps1 -Addrs "0x01FF8628:14w"
 ```
 
 ## Prerequisites

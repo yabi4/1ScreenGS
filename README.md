@@ -10,10 +10,16 @@ critically the battle command menu. That makes the game awkward on a handheld li
 Steam Deck, where you want one screen filling the panel. This patch reroutes the game so
 that whatever you actually need is on the **top** screen, automatically.
 
-No new UI is drawn and no assets are replaced. The DS has two independent 2D engines, and
+Mostly this is rerouting, not redrawing. The DS has two independent 2D engines, and
 `POWCNT1` bit 15 decides which one drives the upper LCD; the patch rewrites the ~87 places
 the game sets that, and adds a small resident hook for the cases that need to change while
 you play.
+
+The one exception is the battle command menu, which is drawn onto the battle scene rather
+than swapped in. Even there nothing is replaced: the labels are the game's own words in
+the game's own font, pulled out of the ROM you supply and rasterised at patch time, so a
+French build says ATTAQUE / SAC / POKéMON / FUITE and an English one FIGHT / BAG / POKéMON
+/ RUN without the patcher knowing which is which.
 
 |  | on the top screen |
 |---|---|
@@ -27,13 +33,17 @@ you play.
 | New game | Oak's speech, the tutorial menu and the gender picker |
 | Flying, Dig, Escape Rope | the animation, from the moment you confirm |
 | Evolution | the Pokémon, and any move it learns afterwards |
-| **Battles** | the scene — until you reach for the menu, then the menu |
+| **Battles** | the scene, with the commands drawn on it; the screen only moves once you choose |
 
-Battles are the interesting part. The battle scene keeps the top screen so you can read
-what just happened; the command menu comes up when you press the **D-pad or A**, steps
-aside after ~1 s if you stop, stays put once you've selected something, and hands the
-screen back the instant you confirm a move. Move names, types and PP are all readable up
-there, and everything is D-pad navigable.
+Battles are the interesting part. The scene never leaves the top screen while you are
+choosing: **FIGHT / BAG / POKéMON / RUN are drawn onto it**, laid out the way the game's
+own cursor moves, and the highlight follows the D-pad. The screen only changes once you
+have actually picked something — the move list, the bag and the party come up then, and
+the scene returns the instant the turn starts. Binary prompts ("… changer de Pokémon?")
+get a small **Oui / Non** box in the same message window instead of taking the screen.
+
+Nothing is timed: there is no delay to wait through and no press that moves the screen
+out from under you.
 
 **L + R** swaps the screens manually at any time, as an escape hatch.
 

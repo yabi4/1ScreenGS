@@ -590,20 +590,21 @@ OneScreen_UpdatePad:
 @ ---------------------------------------------------------------------------
 @ void OneScreen_AutoBattle(void)
 @
-@ The command menu is NOT forced up the moment the game asks for an action -
-@ that would hide the battle scene exactly when you want to read the result of
-@ the last turn. Instead it comes up when you actually start choosing, and
-@ steps aside again if you stop.
+@ The screen no longer moves while you are choosing. The four commands are drawn
+@ onto the battle scene itself (OneScreen_BattleDraw), so there is nothing to
+@ raise and nothing to time out - the routing only changes once you have actually
+@ picked something and the game needs a screen we cannot draw on.
 @
-@   turn executing        -> battle scene on top
-@   awaiting a command    -> leave the scene up until you touch the D-pad or A
-@   D-pad or A pressed    -> command menu on top
-@   ~2 s with no input    -> back to the scene
-@   A pressed (selection) -> stays up; the timeout is cancelled, so the move
-@                            list does not disappear while you read it
+@   turn executing              -> battle scene on top
+@   root command menu (1..8)    -> battle scene on top, commands drawn over it
+@   a yes/no prompt (13..17)    -> battle scene on top, Oui/Non drawn over it
+@   bag or party (overlay 8)    -> hand the screen over, every frame
+@   any other menu (11, 12, ..) -> hand the screen over, every frame
+@   no menu yet (-1 / 0)        -> leave the scene alone; the intro is playing
 @
-@ A counts as a trigger because the cursor starts on ATTAQUE: pressing A without
-@ moving first would otherwise open the move list unseen on the bottom screen.
+@ What this replaces: the menu used to come up on a D-pad or A press and step
+@ aside after ~1 s of stillness, which meant guessing at intent from the pad. The
+@ game's own menu id says what is happening, so none of that guessing survives.
 @
 @ Gated on the running app living inside overlay 12, so none of this can affect
 @ the overworld or any menu - those are handled by the static site flips.

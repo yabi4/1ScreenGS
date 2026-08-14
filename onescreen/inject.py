@@ -42,11 +42,13 @@ MAIN_LOOP_OFF = MAIN_LOOP_SITE - ARM9_RAM
 ORIG_LOOP_FN = 0x0200110C
 
 
-# Order must match OneScreen_Config in src/hook.s.
+# Order must match OneScreen_Config in src/hook.s. The two are positional and
+# nothing checks them against each other, so append only, and append to both.
 CONFIG_FIELDS = ("pad_held", "app_callback", "field_callback",
                  "ov12_lo", "ov12_hi", "battle_state", "dex_exec_orig",
                  "pc_exec_orig", "field_sys", "screens_flipped",
-                 "map_exec_orig", "start_menu_task", "oak_exec_orig")
+                 "map_exec_orig", "start_menu_task", "oak_exec_orig",
+                 "battle_exec_orig")
 
 
 def fill_config(payload: bytes, config_addr: int, load_addr: int,
@@ -80,6 +82,25 @@ def fill_app_table(payload: bytes, table_addr: int, load_addr: int,
         struct.pack_into("<II", buf, off + i * 8, callback, swap)
     else:
         struct.pack_into("<II", buf, off + len(entries) * 8, 0, 0)
+    return bytes(buf)
+
+
+def fill_labels(payload: bytes, blob_addr: int, load_addr: int,
+                blob: bytes) -> bytes:
+    """Write the rasterised command labels into the payload's reserved space.
+
+    The blob is built from the ROM being patched (see onescreen/labels.py), so
+    unlike the rest of the payload it cannot be assembled ahead of time. The hook
+    reserves a fixed `.space` for it and reads its geometry out of the blob's own
+    header, which keeps the two from drifting apart.
+    """
+    off = blob_addr - load_addr
+    if off < 0 or off + len(blob) > len(payload):
+        raise ValueError(
+            f"the label blob ({len(blob)} bytes) does not fit the space "
+            f"reserved at {blob_addr:#010x}; raise LABEL_BLOB_SIZE in src/hook.s")
+    buf = bytearray(payload)
+    buf[off:off + len(blob)] = blob
     return bytes(buf)
 
 

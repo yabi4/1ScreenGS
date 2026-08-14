@@ -45,6 +45,7 @@ DEF_SCREENS_FLIP   = 0x021D1195 @ gSystem.screensFlipped (gSystem + 0x69)
 DEF_MAP_EXEC_ORIG  = 0x021ED8D5 @ the fly / town map app's real exec function
 DEF_START_MENU_TASK = 0x0203BEF1 @ Task_StartMenu; 0 if the patcher cannot vouch
 DEF_OAK_EXEC_ORIG  = 0x021E59B5 @ Oak's speech (overlay 53) real exec function
+DEF_BATTLE_EXEC_ORIG = 0x0203E3AD @ Battle_Main - see OneScreen_BattleExec
 
 KEY_A       = 0x001
 KEY_B       = 0x002
@@ -88,8 +89,115 @@ TOGGLE_MASK = (KEY_L | KEY_R)   @ L+R together; unused by HGSS gameplay
 BATTLE_STATE_EXEC = 0x07
 BATTLE_STATE_SUB  = 0x08        @ bag category, item list, party
 
-@ Frames of no input before the command menu drops back to the battle scene.
-IDLE_FRAMES = 60                @ ~1 s at 60 fps
+@ --- The top-screen command menu -------------------------------------------
+@ Offsets into the live battle structs, all reached from the BattleSystem the
+@ battle app's exec trampoline hands us. Taken from pret's headers, and the ones
+@ that matter are pinned by fields the decomp named after their own offsets:
+@
+@   struct BattleSystem (include/battle/battle.h:527)
+@       +0x04 BgConfig *bgConfig      \ both confirmed independently in the retail
+@       +0x08 Window   *window        / ov12: `ldr r0,[r4,#4]` / `ldr r1,[r4,#8]`
+@       +0x19C BattleInput *battleInput   (unk17C[2] before it, unk1A0 after)
+@
+@   struct BattleInput (include/battle/battle_input.h:169)
+@       +0x66B s8 curMenuId       (unused_668, unused_669 before; unk66F after)
+@       +0x6B4 BattleMenuCursor { u8 enabled; s8 menuY; s8 menuX; u8 unused; }
+@
+@ Both offsets are 0x20 HIGHER than walking pret's struct suggests, which is the
+@ drift battle_input.h:168 warns about ("at some point here my counting was off
+@ so some of the listed offsets may be wrong"). Reading the computed 0x66B gave a
+@ zero byte, and a 160-byte window around it contained no menu id at all.
+@
+@ The real values were measured out of the ROM instead of guessed. Offsets this
+@ large cannot be reached by a Thumb immediate, so every access to these fields
+@ has to load the offset from a literal pool - which makes the pool a census of
+@ the struct. Scanning ov12's word-aligned literals in [0x500,0x800) shows:
+@
+@     0x68a x9   0x68b x6   0x68c x5   0x68d x1   0x68e x3   0x68f x2
+@
+@ six consecutive single-byte offsets, which is exactly pret's run of six u8
+@ fields - battlerType, curMenuId, monTargetType, gender, isTouchDisabled,
+@ unk66F. What confirms the alignment rather than merely fitting it: 0x688 and
+@ 0x689 are absent from the pool entirely, and those are the two pret calls
+@ unused_668 / unused_669. Unreferenced fields leave no literals.
+@
+@ The same +0x20 lands the cursor on 0x6d4, and the fields after it corroborate:
+@ 0x6d8 (keyPressed, x8), 0x6dc (tutorial.finger, x7), 0x6e4/0x6e8/0x6ec (the
+@ three ManagedSprite pointers that close the struct, x5/x1/x2). Two fields
+@ agreeing on one delta, with the gaps in the right places.
+@
+@ Identical in IPGF, IPKF and IPKE - these are code-derived, so unlike data they
+@ do not move between regions.
+BATTLE_INPUT_OFF  = 0x19C
+BI_CURMENU_OFF    = 0x68B
+BI_CURSOR_OFF     = 0x6D4
+
+@ The cursor offset is the one value here that the literal census cannot settle.
+@ curMenuId was pinned by a run of six consecutive byte offsets with the two
+@ unused ones missing; menuCursor has no such signature, and three candidates
+@ (0x6d4, 0x6d8, 0x6dc) all have plausible reference counts and plausible
+@ neighbours. Picking one and shipping it is how the highlight ended up welded to
+@ ATTAQUE: a wrong offset reads bytes that clamp to menuY 0, which is the whole
+@ top row.
+@
+@ So BI_CURSOR_OFF is only a starting guess, and the hook corrects it from the
+@ game itself - see OneScreen_BattleLearn. The window it watches has to contain
+@ every candidate.
+BI_WIN_BASE  = 0x680
+BI_WIN_SIZE  = 128              @ 0x680..0x700
+KEY_UPDOWN   = 0x0C0            @ up | down
+
+@ enum BattleMenuID (include/constants/battle_menu.h:58). Ids 1..8 are ALL the
+@ root command menu, not just the two the enum bothers to name: sBattleMenuTemplates
+@ (src/battle/battle_input.c:581) gives every one of them
+@ sTouchscreenRectMainMenuButtons and BattleInput_CursorMove_MainMenu, and 3 and 4
+@ differ from 1 and 2 only in calling BattleInput_CreateMainMenuObjects instead of
+@ ...Initial - which is to say they are the "put the menu back up" states you land
+@ on after backing out of the move list or the bag. 5 and 6 get named outright in
+@ the cursor mover's own switch.
+@
+@ Testing only 1 and 2 is what made backing out of a submenu leave the screens
+@ swapped with no labels: the menu was up, we just did not recognise the id.
+@ 9/10 are Pal Park, 11+ are the move list, target select and the prompts.
+@ -1 is BATTLE_MENU_NONE, which is live while the battle intro text plays.
+BATTLE_MENU_ROOT_LO = 1
+BATTLE_MENU_ROOT_HI = 8
+
+@ 13..17 are the binary prompts - YES_NO, KEEP_FORGET_MOVE, GIVE_UP_ON_MOVE,
+@ SWITCH_OR_FLEE, SWITCH_OR_KEEP. sBattleMenuTemplates gives all five
+@ BattleInput_CursorMove_TwoOptionsMenu, whose cursor is one column by two rows
+@ (BattleCursor_CheckKeyInput(cursor, 1, 2, ...)), so menuY alone picks the
+@ answer. The bottom screen words them differently each time - "Changer de
+@ Pokemon" against "Continuer le combat" - but the choice underneath is always
+@ the same shape, so they all get the one Oui/Non pair, stacked to match the way
+@ the D-pad moves.
+BATTLE_MENU_TWO_LO = 13
+BATTLE_MENU_TWO_HI = 17
+
+@ Main-engine BG character base. BG1CNT reads charBase 1 and engine A's DISPCNT
+@ character-base offset is 0, both dumped live mid-battle, so the message
+@ window's tiles start at 0x06004000 + baseTile*32. The blob carries the rest of
+@ the geometry in its own header so the two cannot drift.
+BG_MAIN_CHAR = 0x06004000
+LABEL_MAGIC  = 0x424C5331       @ "1SLB"
+
+@ The blob holds two sets of images with different geometry, each described by a
+@ 20-byte record at +8 and +28: data offset, bytes per image, bytes per tile row,
+@ image count, then a byte offset from the BG character base per tile row. The
+@ hook carries no dimensions of its own, so moving or resizing a box is a change
+@ to onescreen/labels.py alone.
+@
+@ An image is named by a single byte, (set << 4) | index, which is what bt_drawn
+@ and bt_lock hold. The last image of each set is all paper and takes that box
+@ down - a separate box for the yes/no prompt is the whole point, because the
+@ blit paints everything in its area and a wide one erases the right-hand end of
+@ any question long enough to reach it.
+LABEL_GEO_SIZE = 20
+LABEL_GEO_YN   = 1              @ (1 << 4) | 0 = top choice, | 1 = bottom
+@ Reserved space for the label images; the patcher refuses rather than overrun it.
+@ Seven 14x4-tile 4bpp images plus a header is 12576 bytes, and the headroom is
+@ there so another prompt type does not mean re-picking the number.
+LABEL_BLOB_SIZE = 14336
 
 @ The main-loop call we displace: `bl 0x0200110C` at 0x02000DB0.
 ORIG_LOOP_FN = 0x0200110C + 1   @ +1 = Thumb
@@ -301,7 +409,7 @@ FIELD_MENU_OFF = 0x1C
     .global OneScreen_Signature
 OneScreen_Signature:
     .ascii  "1SGS"
-    .word   0x00000016          @ payload version
+    .word   0x00000017          @ payload version
 
 @ Filled in by the patcher from the ROM being patched. Defaults are French, so
 @ an unconfigured payload still works there. Keep the field order in step with
@@ -321,6 +429,7 @@ cfg_screens_flip:   .word DEF_SCREENS_FLIP
 cfg_map_exec_orig:  .word DEF_MAP_EXEC_ORIG
 cfg_start_menu_task: .word DEF_START_MENU_TASK
 cfg_oak_exec_orig:  .word DEF_OAK_EXEC_ORIG
+cfg_battle_exec_orig: .word DEF_BATTLE_EXEC_ORIG
 
 pad_held:       .word 0
 pad_new:        .word 0         @ newly pressed this frame
@@ -330,9 +439,14 @@ menu_swapped:   .word 0         @ 1 while WE swapped for the overworld X menu
 last_app:       .word 0
 
 bt_phase:       .word NO_STATE  @ last battle phase acted on
-bt_menu_up:     .word 0         @ 1 while the command menu is on the top screen
-bt_committed:   .word 0         @ 1 once A was pressed: stop the idle timeout
-bt_idle:        .word 0         @ frames since the last input
+bt_menu_last:   .word NO_STATE  @ last menu id acted on, for edge detection
+bt_manual:      .word 0         @ 1 while an L+R override is holding, in battle
+bt_system:      .word 0         @ live BattleSystem*, or 0 outside a battle
+bt_drawn:       .word -1        @ label image currently blitted, -1 = nothing
+bt_cursor_off:  .word BI_CURSOR_OFF  @ learned; see OneScreen_BattleLearn
+bt_have_prev:   .word 0         @ 1 once bt_prev holds last frame's window
+bt_lock:        .word -1        @ image frozen at the moment A was pressed, -1 = free
+
 dex_last:       .word -1        @ last Pokedex proc_state acted on
 dex_mode:       .word 0         @ 0 = grid/info side, 1 = the area map
 pc_frames:      .word 0         @ frames left to hold the PC box routing
@@ -341,6 +455,25 @@ field_restore:  .word 0         @ frames left to force the world back on top
 map_frames:     .word 0         @ counts down once the fly map stops running
 map_pending:    .word 0         @ frames left waiting for the field to pick up
 prev_task:      .word 0         @ last frame's fieldSystem->taskman
+
+@ Kept below the word variables above, not among them: tools/savestate.py reads
+@ that run as a flat array of words and a six-byte table in the middle of it
+@ would silently shift every name after it.
+@
+@ sCursorArrayMainMenu (src/battle/battle_input.c:281) flattened to
+@ [menuY*3 + menuX], mapping the game's 2x3 cursor grid onto our four label
+@ images. FIGHT spans the whole top row; the bottom row is BAG, RUN, POKEMON
+@ left to right - which is why the labels are drawn in that arrangement rather
+@ than a 2x2. Values are image indices: 0 FIGHT, 1 BAG, 2 POKEMON, 3 RUN.
+cursor_cmd:
+    .byte   0, 0, 0
+    .byte   1, 3, 2
+    .align  2
+
+@ Last frame's copy of the window OneScreen_BattleLearn watches.
+bt_prev:        .space BI_WIN_SIZE
+
+
 
 @ Apps that route the wrong engine to the top and never write POWCNT1 in a way
 @ our static site flips can catch. Pairs of {callback, swap}, terminated by 0.
@@ -532,143 +665,546 @@ OneScreen_AutoBattle:
 21: cmp     r5, #0
     bne     28f                     @ mid-turn: nothing to do
 
-    ldr     r5, =pad_new
-    ldr     r5, [r5]
-
-    @ any input at all re-arms the idle timeout
-    cmp     r5, #0
-    beq     24f
-    ldr     r0, =bt_idle
-    movs    r1, #0
-    str     r1, [r0]
-
-    @ B backs out of a submenu (move list, bag, party) to the root command menu.
-    @ Drop the commit so the idle timeout re-arms - otherwise the menu stays up
-    @ forever once you have been into a submenu and come back.
-    movs    r0, r5
-    movs    r1, #KEY_B
-    ands    r0, r1
-    cmp     r0, #0
-    beq     23f
-    ldr     r0, =bt_committed
-    movs    r1, #0
-    str     r1, [r0]
-    b       26f
-
-    @ A = a selection: bring the menu up and keep it there. Do NOT try to guess
-    @ which A press confirms the command - the count varies (the move list needs
-    @ a different number of presses depending on whether you moved the cursor
-    @ first, backed out with B, or picked SAC/POKéMON). The state variable above
-    @ flips on confirmation anyway, so let it do the work.
+    @ --- awaiting a command: the menu id decides everything ---
+    @ The old rule watched the pad and guessed at intent - a D-pad or A press
+    @ raised the whole menu, and ~1 s of stillness dropped it again. It no longer
+    @ has to guess, because the labels are on the battle scene itself: the screen
+    @ only changes when the player has actually chosen something, and the game
+    @ says when that happened by moving off its root menu.
     @
-    @ A only counts as a selection if there was a menu on screen to select FROM.
-    @ The phase reads "awaiting a command" from the moment overlay 10 loads,
-    @ which is while the battle intro text is still playing - so mashing A to
-    @ skip that text used to land here, set the commit, and pin the menu on the
-    @ top screen for the rest of the fight with no way back but a trip into a
-    @ submenu. An A press with no menu up just brings it up, like the D-pad.
-23: movs    r0, r5
-    movs    r1, #KEY_A
-    ands    r0, r1
-    cmp     r0, #0
-    beq     22f
-    ldr     r0, =bt_menu_up
-    ldr     r0, [r0]
-    cmp     r0, #0
-    beq     25f
-    ldr     r0, =bt_committed
-    movs    r1, #1
-    str     r1, [r0]
-25: bl      OneScreen_ShowMenu
-    b       26f
+    @ Reading the menu id also retires the battle-intro problem for free. The
+    @ phase proxy reads "awaiting a command" from the moment overlay 10 loads,
+    @ which is while the intro text is still playing - but curMenuId is
+    @ BATTLE_MENU_NONE until the menu actually opens, so mashing A through the
+    @ intro now does nothing instead of pinning the menu for the rest of the
+    @ fight.
+    bl      OneScreen_BattleMenuId
+    movs    r5, r0
 
-    @ D-pad = started navigating: bring the menu up
-22: movs    r0, r5
-    ldr     r1, =DPAD_MASK
-    ands    r0, r1
-    cmp     r0, #0
-    beq     26f
-    bl      OneScreen_ShowMenu
-    b       26f
-
-    @ --- no input this frame: run the idle timeout ---
-24: ldr     r0, =bt_menu_up
-    ldr     r0, [r0]
-    cmp     r0, #0
-    beq     28f                     @ menu is not up; nothing to time out
-    ldr     r0, =bt_committed
-    ldr     r0, [r0]
-    cmp     r0, #0
-    bne     26f                     @ a selection was made: leave it up
-    @ A sub-screen is open - you are browsing the bag or the party, where long
-    @ pauses are normal. Hold regardless of what we think you selected; this is
-    @ the game's own state, so it is right even if the commit above is not.
-    ldr     r0, =cfg_battle_state
-    ldr     r0, [r0]
-    ldrb    r0, [r0]
-    cmp     r0, #BATTLE_STATE_SUB
-    beq     26f
-    ldr     r1, =bt_idle
-    ldr     r0, [r1]
-    adds    r0, #1
-    str     r0, [r1]
-    cmp     r0, #IDLE_FRAMES
-    blo     26f
-    ldr     r0, =bt_menu_up
+    @ An L+R override holds until the menu you are on changes - moving into the
+    @ move list, or backing out of it, hands control back to us. Without this the
+    @ escape hatch would be useless in battle, since the routing is now
+    @ re-asserted every frame rather than once.
+    ldr     r0, =bt_menu_last
+    ldr     r1, [r0]
+    cmp     r1, r5
+    beq     27f
+    str     r5, [r0]
+    ldr     r0, =bt_manual
     movs    r1, #0
     str     r1, [r0]
-    movs    r0, #0                  @ idle too long -> back to the scene
+27: ldr     r0, =bt_manual
+    ldr     r0, [r0]
+    cmp     r0, #0
+    bne     28f                     @ the player has taken the screen; leave it
+
+    @ The bag and the party are their own overlay, and they do not move
+    @ curMenuId off the root menu while they are up - so going by the menu id
+    @ alone left them drawing on the bottom screen the first time they opened.
+    @ The overlay id says it outright, and it is the same signal the old timeout
+    @ logic used for exactly this case.
+    bl      OneScreen_BattleSubOpen
+    cmp     r0, #0
+    bne     25f
+
+    subs    r0, r5, #BATTLE_MENU_ROOT_LO
+    cmp     r0, #(BATTLE_MENU_ROOT_HI - BATTLE_MENU_ROOT_LO)
+    bls     26f                     @ 1..8: the root command menu
+    movs    r0, r5                  @ 3-bit immediate cannot reach 13
+    subs    r0, #BATTLE_MENU_TWO_LO
+    cmp     r0, #(BATTLE_MENU_TWO_HI - BATTLE_MENU_TWO_LO)
+    bls     26f                     @ 13..17: a yes/no prompt, drawn on the scene
+    cmp     r5, #0
+    ble     28f                     @ -1 / 0: no menu is up, leave the scene alone
+
+    @ A submenu is open - the move list, target select. That is drawn on engine
+    @ B, so hand the screen over, and keep handing it over: these sub-screens
+    @ re-assert the routing themselves as they open, so a one-shot swap gets
+    @ undone the moment you go a level deeper.
+25: movs    r0, #1
     bl      OneScreen_SetSwap
     b       28f
 
-    @ --- hold the routing while the player is navigating ---
-    @ Sub-screens opened from the battle menu (item categories, the item list,
-    @ the party list) re-assert the display routing themselves as they open, so a
-    @ one-shot swap gets undone the moment you go a level deeper. Re-apply it
-    @ every frame while the menu is up. L+R clears bt_menu_up, so a manual
-    @ override still wins and is not fought.
-26: ldr     r0, =bt_menu_up
-    ldr     r0, [r0]
-    cmp     r0, #0
-    beq     28f
-    movs    r0, #1
+    @ The root command menu. Keep the battle scene on the top screen - the four
+    @ commands are drawn onto it rather than replacing it.
+26: movs    r0, #0
     bl      OneScreen_SetSwap
     b       28f
 
 29: movs    r0, #NO_STATE           @ not in a battle: re-arm for next time
     str     r0, [r4]
+    movs    r0, #0                  @ drop the BattleSystem: the heap it lives
+    ldr     r1, =bt_system          @ in is freed when the battle ends
+    str     r0, [r1]
     bl      OneScreen_ResetBattleUi
 28: pop     {r4, r5, pc}
     .align  2
     .pool
 
-@ void OneScreen_ShowMenu(void) - put the command menu up, once.
+@ ---------------------------------------------------------------------------
+@ int OneScreen_BattleMenuId(void)
+@   -> r0 = battleInput->curMenuId, or BATTLE_MENU_NONE (-1) if there is no
+@      live battle to read it from.
+@
+@ Returning -1 for "cannot tell" is deliberate: -1 is already the game's own
+@ "no menu is up" value, and both cases want the same treatment - leave the
+@ battle scene alone and draw nothing.
+@ ---------------------------------------------------------------------------
     .thumb_func
-OneScreen_ShowMenu:
-    push    {lr}
-    ldr     r0, =bt_menu_up
-    ldr     r1, [r0]
-    cmp     r1, #0
-    bne     31f                     @ already up
-    movs    r1, #1
-    str     r1, [r0]
-    movs    r0, #1
-    bl      OneScreen_SetSwap
-31: pop     {pc}
+OneScreen_BattleMenuId:
+    ldr     r0, =bt_system
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     31f
+    ldr     r1, =BATTLE_INPUT_OFF
+    ldr     r0, [r0, r1]
+    cmp     r0, #0
+    beq     31f
+    ldr     r1, =BI_CURMENU_OFF
+    ldrsb   r0, [r0, r1]
+    bx      lr
+31: movs    r0, #0
+    mvns    r0, r0                  @ -1
+    bx      lr
     .align  2
     .pool
 
-@ void OneScreen_ResetBattleUi(void)
+@ int OneScreen_BattleSubOpen(void) -> 1 while a battle sub-screen owns engine B
+@ (bag category, item list, party). This is the overlay id, not the menu id: the
+@ bag and party run as overlay 8 and leave curMenuId sitting on the root menu, so
+@ the menu id cannot see them.
+    .thumb_func
+OneScreen_BattleSubOpen:
+    ldr     r0, =cfg_battle_state
+    ldr     r0, [r0]
+    ldrb    r0, [r0]
+    cmp     r0, #BATTLE_STATE_SUB
+    beq     63f
+    movs    r0, #0
+    bx      lr
+63: movs    r0, #1
+    bx      lr
+    .align  2
+    .pool
+
+@ int OneScreen_BattleYesNo(void) -> the label image for a two-option prompt.
+@ One column, two rows, so menuY alone is the answer.
+    .thumb_func
+OneScreen_BattleYesNo:
+    ldr     r0, =bt_system
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     64f
+    ldr     r1, =BATTLE_INPUT_OFF
+    ldr     r0, [r0, r1]
+    cmp     r0, #0
+    beq     64f
+    ldr     r1, =bt_cursor_off
+    ldr     r1, [r1]
+    adds    r0, r0, r1
+    ldrb    r0, [r0, #1]            @ menuY
+    cmp     r0, #1
+    bls     65f
+64: movs    r0, #0
+65: adds    r0, #(LABEL_GEO_YN << 4)
+    bx      lr
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ void OneScreen_BattleLearn(BattleInput *bi)
+@
+@ Work out where BattleMenuCursor really is, by watching the game move it.
+@
+@ pret's offsets drift in this part of the struct (battle_input.h:168) and the
+@ literal census that pinned curMenuId cannot separate the cursor from its
+@ neighbours. Rather than ship a guess, watch what actually changes: on a frame
+@ where UP or DOWN was pressed on the root menu, the game has already run and
+@ menuY is the byte that moved. UP/DOWN only, never LEFT/RIGHT - the mover has a
+@ special case where LEFT or RIGHT off FIGHT writes menuX *and* menuY
+@ (battle_input.c:3778), so those frames cannot tell the two apart.
+@
+@ The candidate has to look like a BattleMenuCursor and not merely like a byte
+@ that changed: menuY only ever holds 0 or 1, the byte before it is `enabled`
+@ which is 1 while the cursor is live, and the byte after is menuX, at most 2.
+@ Requiring exactly one match in the window means an ambiguous frame is skipped
+@ rather than guessed at; the next press tries again.
+@
+@ Learned once and kept - it is a property of the ROM, not of the battle.
+@ ---------------------------------------------------------------------------
+    .thumb_func
+OneScreen_BattleLearn:
+    push    {r4, r5, r6, r7, lr}
+    movs    r6, r0                  @ battleInput
+    ldr     r7, =BI_WIN_BASE
+    adds    r6, r6, r7              @ &bi[BI_WIN_BASE]
+    ldr     r7, =bt_prev
+
+    ldr     r0, =bt_have_prev
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     47f                     @ nothing to compare against yet
+
+    ldr     r0, =pad_new
+    ldr     r0, [r0]
+    movs    r1, #KEY_UPDOWN
+    ands    r0, r1
+    cmp     r0, #0
+    beq     47f
+
+    movs    r2, #1                  @ offset; 0 has no byte before it
+    movs    r4, #0                  @ candidate
+    movs    r5, #0                  @ count
+46: ldrb    r0, [r7, r2]            @ was
+    ldrb    r1, [r6, r2]            @ is
+    cmp     r0, r1
+    beq     48f
+    cmp     r0, #1
+    bhi     48f                     @ menuY is 0 or 1, before and after
+    cmp     r1, #1
+    bhi     48f
+    subs    r3, r2, #1
+    ldrb    r0, [r6, r3]
+    cmp     r0, #1
+    bne     48f                     @ preceded by enabled == 1
+    adds    r3, r2, #1
+    ldrb    r0, [r6, r3]
+    cmp     r0, #2
+    bhi     48f                     @ followed by menuX <= 2
+    movs    r4, r2
+    adds    r5, #1
+48: adds    r2, #1
+    cmp     r2, #(BI_WIN_SIZE - 1)
+    blo     46b
+
+    cmp     r5, #1                  @ exactly one match, or leave it alone
+    bne     47f
+    ldr     r0, =BI_WIN_BASE
+    adds    r0, r0, r4
+    subs    r0, #1                  @ menuY is at +1 from the struct base
+    ldr     r1, =bt_cursor_off
+    str     r0, [r1]
+
+47: movs    r2, #0                  @ remember this frame's window
+49: ldrb    r0, [r6, r2]
+    strb    r0, [r7, r2]
+    adds    r2, #1
+    cmp     r2, #BI_WIN_SIZE
+    blo     49b
+    ldr     r0, =bt_have_prev
+    movs    r1, #1
+    str     r1, [r0]
+    pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ int OneScreen_BattleCursor(void)
+@   -> r0 = which command is highlighted, as a label image index 0..3.
+@
+@ Read from the game's own BattleMenuCursor rather than tracked here. The game
+@ already moves this on the D-pad (BattleInput_CursorMove_MainMenu), remembers it
+@ per battler between turns, and applies its own wrap rules at the edges; keeping
+@ a second copy in the hook would only be a second thing to drift.
+@
+@ menuY/menuX are clamped rather than trusted. If BI_CURSOR_OFF turns out to be
+@ pointing at the wrong bytes, a clamp keeps this returning a valid image instead
+@ of indexing off the end of a six-byte table.
+@ ---------------------------------------------------------------------------
+    .thumb_func
+OneScreen_BattleCursor:
+    ldr     r0, =bt_system
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     34f
+    ldr     r1, =BATTLE_INPUT_OFF
+    ldr     r0, [r0, r1]
+    cmp     r0, #0
+    beq     34f
+    ldr     r1, =bt_cursor_off
+    ldr     r1, [r1]
+    adds    r0, r0, r1
+    ldrb    r1, [r0, #1]            @ menuY
+    ldrb    r2, [r0, #2]            @ menuX
+    cmp     r1, #1
+    bls     32f
+    movs    r1, #0
+32: cmp     r2, #2
+    bls     33f
+    movs    r2, #0
+33: lsls    r0, r1, #1
+    adds    r0, r0, r1              @ menuY * 3
+    adds    r0, r0, r2
+    ldr     r1, =cursor_cmd
+    ldrb    r0, [r1, r0]
+    bx      lr
+34: movs    r0, #0                  @ no cursor to read: show FIGHT selected
+    bx      lr
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ void OneScreen_BattleMenu(int image)
+@
+@ Blit one of the label images into the battle message window. This is the whole
+@ renderer: the labels were rasterised from the ROM's own strings and font at
+@ patch time, so at runtime there is no font, no heap and no call into game code
+@ - just tiles copied into VRAM the game has already allocated, mapped and
+@ palettised for its own message box.
+@
+@ The destination is window[0] on GF_BG_LYR_MAIN_1, whose tiles are contiguous
+@ per row and stride by the full 27-tile window width between rows. Those row
+@ offsets are precomputed in the blob header, so this is four flat copies.
+@
+@ Called every frame while the menu is up, for the same reason SetSwap is: the
+@ game rewrites this window whenever it prints, so the last write in the frame
+@ has to be ours. 1792 bytes a frame.
+@ ---------------------------------------------------------------------------
+    .global OneScreen_BattleMenu
+    .thumb_func
+OneScreen_BattleMenu:
+    push    {r4, r5, r6, r7, lr}
+    ldr     r7, =OneScreen_Labels
+    ldr     r1, [r7]
+    ldr     r2, =LABEL_MAGIC
+    cmp     r1, r2
+    bne     39f                     @ blob never filled in: draw nothing at all
+    ldrb    r6, [r7, #4]            @ rows
+
+    lsrs    r1, r0, #4              @ which set
+    movs    r2, #LABEL_GEO_SIZE
+    muls    r1, r2
+    adds    r1, #8
+    adds    r1, r7, r1              @ -> its geometry record
+    movs    r2, #15
+    ands    r0, r2                  @ index within the set
+
+    ldr     r3, [r1, #4]            @ bytes per image
+    muls    r3, r0
+    ldr     r2, [r1]                @ where this set's images start
+    adds    r3, r3, r2
+    adds    r4, r7, r3              @ src
+    ldrh    r5, [r1, #8]            @ bytes per tile row
+    movs    r7, r1                  @ 3-bit immediate cannot reach 12
+    adds    r7, #12                 @ -> the row offset table
+
+    movs    r3, #0
+35: cmp     r3, r6
+    bhs     39f
+    lsls    r0, r3, #1
+    ldrh    r0, [r7, r0]
+    ldr     r1, =BG_MAIN_CHAR
+    adds    r0, r0, r1              @ dst
+    movs    r2, r5
+36: ldmia   r4!, {r1}
+    stmia   r0!, {r1}
+    subs    r2, #4
+    bne     36b
+    adds    r3, #1
+    b       35b
+39: pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ int OneScreen_BattleWipe(int set) -> the image code that blanks that set's box.
+@ The all-paper image is the last one of each set, so this is read from the blob
+@ rather than known here.
+    .thumb_func
+OneScreen_BattleWipe:
+    lsls    r3, r0, #4
+    ldr     r1, =OneScreen_Labels
+    movs    r2, #LABEL_GEO_SIZE
+    muls    r0, r2
+    adds    r0, #8
+    adds    r0, r1, r0
+    ldrh    r0, [r0, #10]           @ images in the set
+    subs    r0, #1
+    orrs    r0, r3
+    bx      lr
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ void OneScreen_BattleDraw(int menu_id)
+@
+@ Only the root command menu draws labels, and it redraws them EVERY frame: the
+@ game rewrites window[0] whenever the message printer runs, so a one-shot blit
+@ gets painted over. This is the same rule the display routing already lives by.
+@
+@ Coming down is the opposite - wipe exactly ONCE, on the transition. Blitting
+@ paper every frame would keep clearing the right-hand end of the message window
+@ for the whole turn, which is where a long battle message goes. bt_drawn is what
+@ separates the two: it holds the image on screen, or -1 for "we have taken our
+@ labels down and the window is the game's again".
+@ ---------------------------------------------------------------------------
+    .thumb_func
+OneScreen_BattleDraw:
+    push    {r4, r5, lr}
+    movs    r5, r0
+    bl      OneScreen_BattleSubOpen
+    cmp     r0, #0
+    bne     41f                     @ the bag or party owns the screen
+    subs    r1, r5, #BATTLE_MENU_ROOT_LO
+    cmp     r1, #(BATTLE_MENU_ROOT_HI - BATTLE_MENU_ROOT_LO)
+    bls     40f
+    movs    r1, r5                  @ 3-bit immediate cannot reach 13
+    subs    r1, #BATTLE_MENU_TWO_LO
+    cmp     r1, #(BATTLE_MENU_TWO_HI - BATTLE_MENU_TWO_LO)
+    bls     44f
+
+    @ Nothing of ours belongs on screen: take down whichever box is up. The lock
+    @ deliberately SURVIVES this. Going into the bag and back out is not a phase
+    @ change, so without the lock the root menu would be redrawn from a cursor the
+    @ game has not restored yet and ATTAQUE would flash. Holding the image the
+    @ player last confirmed is also simply correct - the game restores the cursor
+    @ to that same choice. ResetBattleUi drops it when the turn actually runs.
+41: ldr     r0, =bt_drawn
+    ldr     r1, [r0]
+    adds    r2, r1, #1
+    beq     42f                     @ was -1: nothing of ours on screen
+    movs    r2, #0
+    mvns    r2, r2
+    str     r2, [r0]
+    lsrs    r0, r1, #4              @ the set that is currently up
+    bl      OneScreen_BattleWipe
+    bl      OneScreen_BattleMenu
+    b       42f
+
+40: bl      OneScreen_BattleCursor
+    b       45f
+44: bl      OneScreen_BattleYesNo
+45: movs    r4, r0
+
+    @ Confirming a choice resets the game's cursor before the menu id changes, so
+    @ for a frame or two the highlight would snap back to FIGHT and be visible as
+    @ a flash on the way out. Freeze the image the player was actually looking at
+    @ when they pressed A, and hold it until the menu changes or they move again.
+    ldr     r0, =pad_new
+    ldr     r0, [r0]
+    ldr     r1, =DPAD_MASK
+    ands    r1, r0
+    cmp     r1, #0
+    beq     46f
+    ldr     r1, =bt_lock            @ moved: the lock is stale
+    movs    r2, #0
+    mvns    r2, r2
+    str     r2, [r1]
+46: ldr     r1, =bt_lock
+    ldr     r2, [r1]
+    adds    r3, r2, #1
+    beq     47f
+    lsrs    r3, r2, #4              @ a lock only holds within its own box:
+    lsrs    r5, r4, #4              @ a command image means nothing to a yes/no
+    cmp     r3, r5                  @ prompt, and would index the wrong set
+    bne     47f
+    movs    r4, r2                  @ locked: keep showing it
+    b       48f
+47: movs    r2, #KEY_A
+    ands    r0, r2
+    cmp     r0, #0
+    beq     48f
+    ldr     r0, =bt_drawn
+    ldr     r0, [r0]
+    adds    r2, r0, #1
+    beq     48f                     @ nothing on screen yet to freeze
+    str     r0, [r1]
+    movs    r4, r0
+48: ldr     r0, =bt_drawn
+    str     r4, [r0]
+    movs    r0, r4
+    bl      OneScreen_BattleMenu
+42: pop     {r4, r5, pc}
+    .align  2
+    .pool
+
+@ void OneScreen_ResetBattleUi(void) - forget what is on screen, so nothing is
+@ wiped on the way out of a battle whose window has already gone, and drop any
+@ L+R override so the next battle does not start out of our hands.
     .thumb_func
 OneScreen_ResetBattleUi:
     movs    r1, #0
-    ldr     r0, =bt_menu_up
+    mvns    r1, r1
+    ldr     r0, =bt_drawn
     str     r1, [r0]
-    ldr     r0, =bt_committed
+    ldr     r0, =bt_menu_last
     str     r1, [r0]
-    ldr     r0, =bt_idle
+    movs    r1, #0
+    ldr     r0, =bt_manual
+    str     r1, [r0]
+    ldr     r0, =bt_have_prev       @ the window belongs to a battle that is over
+    str     r1, [r0]
+    movs    r1, #0                  @ and the frozen highlight to the last turn
+    mvns    r1, r1
+    ldr     r0, =bt_lock
     str     r1, [r0]
     bx      lr
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ int OneScreen_BattleExec(OverlayManager *manager, int *proc_state)
+@
+@ Installed in place of the battle application's exec pointer, the same trick
+@ the Pokedex, PC box, fly map and Oak's speech already use. The battle is the
+@ awkward one to find: every other application puts init/exec/exit *inside* the
+@ overlay they name, but the battle's three are thin ARM9 wrappers (pret's
+@ src/launch_application.c), so regions.find_overlay_template needs its
+@ arm9_resident shape - three Thumb ARM9 pointers followed by `ovy_id == 12`.
+@ Exactly one match in IPGF, IPKF and IPKE (FR/HG-FR 0x020FA468, US 0x020FA484),
+@ with identical code pointers in all three, so this is region-neutral like the
+@ rest.
+@
+@ What it is for: manager->data is the live BattleSystem, which is the root for
+@ everything the top-screen command menu needs - the window it draws into, the
+@ menu the player is on, and the cursor cell to highlight. Reading it here beats
+@ hunting for it in RAM: the framework hands us the manager every frame.
+@
+@ Ordering follows OneScreen_OakExec: run the app's real exec FIRST, then read
+@ manager->data. Two reasons - the pointer does not exist until Battle_Init has
+@ run, and anything we draw has to land after the game's own window redraw for
+@ the frame, or it gets painted over. `docs/AUDIT.md:133` calls that failure
+@ class 4, and it is the reason the PC box needed a hold.
+@
+@ Nothing is drawn yet; this only captures the pointer, so the build is
+@ behaviourally identical until the renderer lands.
+@ ---------------------------------------------------------------------------
+BATTLE_DATA_OFF = 0x08          @ manager->data, from &proc_state (+0x14)
+
+    .global OneScreen_BattleExec
+    .thumb_func
+OneScreen_BattleExec:
+    push    {r4, r5, lr}
+    movs    r4, r1                  @ &proc_state, to survive the call
+    ldr     r3, =cfg_battle_exec_orig
+    ldr     r3, [r3]
+    blx     r3
+    movs    r5, r0                  @ keep its return value
+    ldr     r4, [r4, #BATTLE_DATA_OFF]
+    ldr     r0, =bt_system
+    str     r4, [r0]
+
+    @ Draw here rather than from the main-loop hook, because here we are AFTER
+    @ the battle app has run for this frame - so whatever it printed into the
+    @ message window is already down, and our labels go on top of it instead of
+    @ under it. That is failure class 4 in docs/AUDIT.md, the one that cost the
+    @ PC box a hold.
+    cmp     r4, #0
+    beq     45f
+
+    bl      OneScreen_BattleMenuId
+    push    {r0}
+    subs    r1, r0, #BATTLE_MENU_ROOT_LO
+    cmp     r1, #(BATTLE_MENU_ROOT_HI - BATTLE_MENU_ROOT_LO)
+    bhi     43f                     @ only learn while the root menu is up
+    ldr     r1, =BATTLE_INPUT_OFF
+    ldr     r0, [r4, r1]
+    cmp     r0, #0
+    beq     43f
+    bl      OneScreen_BattleLearn
+43: pop     {r0}
+    bl      OneScreen_BattleDraw
+45: movs    r0, r5
+    pop     {r4, r5, pc}
     .align  2
     .pool
 
@@ -1150,9 +1686,9 @@ OneScreen_Poll:
     cmp     r0, #0
     beq     10f                     @ neither is new: still held from before
     bl      OneScreen_Toggle
-    ldr     r0, =bt_menu_up         @ stop the battle logic re-asserting, so a
-    movs    r1, #0                  @ manual override sticks until you press the
-    str     r1, [r0]                @ D-pad again or the phase changes
+    ldr     r0, =bt_manual          @ stop the battle logic re-asserting, so a
+    movs    r1, #1                  @ manual override sticks until the menu you
+    str     r1, [r0]                @ are on changes, or the phase does
 
 10: ldr     r5, =menu_swapped
     ldr     r0, =cfg_app_callback
@@ -1296,3 +1832,22 @@ OneScreen_Frame:
     pop     {pc}
     .align  2
     .pool
+
+@ ---------------------------------------------------------------------------
+@ The command labels, rasterised from the ROM's own strings and font at patch
+@ time by onescreen/labels.py and written in here by inject.fill_labels. Kept
+@ last in the payload so adding to it never moves any code.
+@
+@ Five 14x4-tile images at 4bpp - one per command highlighted, plus an all-paper
+@ one to take the menu down - behind a 32-byte header holding the row count, the
+@ image count, the bytes per tile row and per image, and the byte offset from the
+@ BG character base to each tile row. The hook reads that geometry rather than
+@ repeating it, so the layout cannot drift away from the rasteriser's.
+@
+@ An unfilled blob reads as zeroes, whose magic does not match, and
+@ OneScreen_BattleMenu draws nothing at all rather than garbage.
+@ ---------------------------------------------------------------------------
+    .align  2
+    .global OneScreen_Labels
+OneScreen_Labels:
+    .space  LABEL_BLOB_SIZE

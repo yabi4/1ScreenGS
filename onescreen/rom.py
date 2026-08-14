@@ -19,7 +19,7 @@ import ndspy.code
 import ndspy.codeCompression
 import ndspy.rom
 
-from . import inject, regions, sites, table
+from . import inject, labels, regions, sites, table
 
 PAYLOAD_DIR = pathlib.Path(__file__).resolve().parent / "payload"
 
@@ -122,16 +122,23 @@ def patch(rom_bytes: bytes, log=print, auto_battle=True):
         # so the hook is handed &proc_state - the screen level - every frame
         # instead of having to find the manager in RAM. The templates live in
         # ARM9 static data and are located by shape, so this is region-neutral.
-        for label, ovy_id, field, symbol, effect in (
+        for label, ovy_id, field, symbol, effect, in_arm9 in (
                 ("Pokedex", 18, "dex_exec_orig", "OneScreen_DexExec",
-                 "area map will stay on the bottom screen"),
+                 "area map will stay on the bottom screen", False),
                 ("PC box", 14, "pc_exec_orig", "OneScreen_PcExec",
-                 "box screens will stay on the bottom screen"),
+                 "box screens will stay on the bottom screen", False),
                 ("Fly map", 101, "map_exec_orig", "OneScreen_MapExec",
-                 "the flight animation will stay on the bottom screen"),
+                 "the flight animation will stay on the bottom screen", False),
                 ("Oak", 53, "oak_exec_orig", "OneScreen_OakExec",
-                 "the opening speech will stay inverted")):
-            tmpl = regions.find_overlay_template(arm9, overlays, ovy_id)
+                 "the opening speech will stay inverted", False),
+                # The battle's init/exec/exit are ARM9 wrappers, not ov12 code,
+                # so this one needs the arm9_resident shape. It is what hands the
+                # hook the live BattleSystem every frame, which the top-screen
+                # command menu is built on.
+                ("Battle", 12, "battle_exec_orig", "OneScreen_BattleExec",
+                 "the battle command menu will stay on the bottom screen", True)):
+            tmpl = regions.find_overlay_template(arm9, overlays, ovy_id,
+                                                 arm9_resident=in_arm9)
             if tmpl:
                 tmpl_addr, _init, orig_exec, _exit = tmpl
                 values[field] = orig_exec
@@ -144,6 +151,20 @@ def patch(rom_bytes: bytes, log=print, auto_battle=True):
                 log(f"  {label:<9}: template not found; {effect}")
         payload = inject.fill_config(payload, meta["symbols"]["OneScreen_Config"],
                                      meta["load_addr"], values)
+
+        # The top-screen command labels, rasterised from this ROM's own message
+        # archive and font so the build speaks whatever language the dump does.
+        # If anything about that data is not what we expect we ship without
+        # them: the hook checks the blob's magic and simply draws nothing, which
+        # costs the labels but leaves every other behaviour intact.
+        try:
+            blob = labels.build(rom, log=log)
+            payload = inject.fill_labels(payload,
+                                         meta["symbols"]["OneScreen_Labels"],
+                                         meta["load_addr"], blob)
+        except labels.LabelError as exc:
+            log(f"  Labels   : NOT BUILT - {exc}")
+            log("             the battle menu will not be drawn on the top screen")
 
         apps = regions.check_app_table(arm9)
         payload = inject.fill_app_table(payload,

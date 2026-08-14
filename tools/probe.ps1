@@ -3,8 +3,19 @@
 #
 # Each spec is ADDR:COUNT+FORMAT where format is w (word) or b (byte).
 # Attaching halts the CPU; the script always detaches so emulation resumes.
+#
+# -Gdb passes raw gdb commands through, separated by ';'. Needed whenever the
+# address you want is only reachable by following a pointer - the hook's own
+# variables sit at fixed ITCM addresses, but everything they point into is
+# heap-allocated and moves between runs, so
+#
+#   -Gdb "set `$bs = *(unsigned long*)0x01FF8680; x/32xb `$bs + 0x19C"
+#
+# is the only way to read a live struct in a single session. The stub accepts
+# exactly one connection per emulator launch, so batch everything into one call.
 param(
   [string]$Addrs = "0x021D112C:4w",
+  [string]$Gdb = "",
   [int]$Port = 3333
 )
 
@@ -17,6 +28,9 @@ foreach ($spec in $Addrs.Split(",")) {
   if ($spec -match '^\s*(0x[0-9A-Fa-f]+):(\d+)([wb])\s*$') {
     $cmds += @("-ex", "x/$($Matches[2])x$($Matches[3]) $($Matches[1])")
   }
+}
+foreach ($c in ($Gdb -split ';')) {
+  if ($c.Trim()) { $cmds += @("-ex", $c.Trim()) }
 }
 $cmds += @("-ex", "detach", "-ex", "quit")
 

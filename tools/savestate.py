@@ -202,8 +202,8 @@ def cmd_intersect(args):
 # Payload variables, in the order they are declared in src/hook.s after the
 # signature (4 bytes) + version (4) + the config block.
 HOOK_VARS = ["pad_held", "pad_new", "prev_pad", "menu_swapped", "last_app",
-             "bt_phase", "bt_menu_up", "bt_committed", "bt_idle", "dex_last",
-             "dex_mode", "pc_frames", "script_menu", "field_restore",
+             "bt_phase", "bt_menu_last", "bt_manual", "bt_system", "bt_drawn",
+             "dex_last", "dex_mode", "pc_frames", "script_menu", "field_restore",
              "map_frames", "map_pending", "prev_task"]
 
 

@@ -117,7 +117,8 @@ def _read_literal(arm9: bytes, ldr_addr: int, want_reg=None) -> int:
     return struct.unpack_from("<I", arm9, lit)[0]
 
 
-def find_overlay_template(arm9: bytes, overlays, ovy_id: int):
+def find_overlay_template(arm9: bytes, overlays, ovy_id: int,
+                          arm9_resident: bool = False):
     """Locate an OverlayManagerTemplate in ARM9 static data, by shape.
 
     pret/pokeheartgold:
@@ -125,20 +126,39 @@ def find_overlay_template(arm9: bytes, overlays, ovy_id: int):
         struct OverlayManagerTemplate { OverlayFunction init, exec, exit;
                                         FSOverlayID ovy_id; };
 
-    so it is three pointers into the overlay followed by the overlay number.
-    Found structurally rather than by address, which makes it region-independent
-    (measured: FR 0x020FA268, US 0x020FA284 - exactly one match in each ROM).
+    so it is three pointers followed by the overlay number. Found structurally
+    rather than by address, which makes it region-independent (measured:
+    FR 0x020FA268, US 0x020FA284 - exactly one match in each ROM).
+
+    Most applications put init/exec/exit *inside* the overlay they name, which is
+    what the default search requires. The battle is the exception: its three
+    functions are thin ARM9 wrappers (pret's src/launch_application.c), so its
+    template holds ARM9 pointers next to `ovy_id == 12`. Pass arm9_resident for
+    that shape. Thumb bit required, which is what keeps the ARM9 variant from
+    matching arbitrary triples of data pointers - measured exactly one hit in
+    IPGF, IPKF and IPKE (FR 0x020FA468, US 0x020FA484, identical code pointers
+    0x0203E3A9 / 0x0203E3AD / 0x0203E3C1 in all three).
 
     Returns (template_address, init, exec, exit) or None.
     """
-    ov = overlays[ovy_id]
-    lo, hi = ov.ramAddress, ov.ramAddress + ov.ramSize
+    if arm9_resident:
+        lo, hi = ARM9_RAM, ARM9_RAM + len(arm9)
+
+        def ok(x):
+            return (x & 1) and lo <= (x & ~1) < hi
+    else:
+        ov = overlays[ovy_id]
+        lo, hi = ov.ramAddress, ov.ramAddress + ov.ramSize
+
+        def ok(x):
+            return lo <= (x & ~1) < hi
+
     hits = []
     for off in range(0, len(arm9) - 16, 4):
         w = struct.unpack_from("<4I", arm9, off)
         if w[3] != ovy_id:
             continue
-        if all(lo <= (x & ~1) < hi for x in w[:3]):
+        if all(ok(x) for x in w[:3]):
             hits.append((ARM9_RAM + off, w[0], w[1], w[2]))
     if len(hits) != 1:
         return None

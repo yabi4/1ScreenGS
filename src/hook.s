@@ -351,21 +351,18 @@ STARTMENU_EXIT_HI = 13          @ START_MENU_STATE_13: jump to the exit task
 @
 @   FieldSystem +0xD3   the cursor. NOT in StartMenuTaskData - the touch overlay
 @                       owns it (ov27_0225B404 writes it on every D-pad move) and
-@                       start_menu.c only reads it. Read 0 with POKEDEX lit.
-@   StartMenuTaskData +0x2C  numActiveButtons. Read 10 for a SEVEN-entry menu:
-@                       StartMenu_BuildActionLists always appends the two
-@                       registered-item buttons, which the D-pad cannot reach
-@                       (ov27_0225D0B4 navigates 7 slots). Hence the cap below.
-@   StartMenuTaskData +0x3A  selectionToAction[10]. Read
-@                       [0,1,2,11,3,4,5,9,10,0] = POKEDEX, POKEMON, BAG,
-@                       POKEGEAR, TRAINER_CARD, SAVE, OPTIONS then the two
-@                       extras - exactly the order on screen. Reading this rather
-@                       than assuming a fixed list is what makes the panel right
-@                       in Safari, the Bug Contest and before you own the Pokedex.
+@                       start_menu.c only reads it. Read 0 with POKEDEX lit. It
+@                       counts only the entries you HAVE, so it is an index into
+@                       the compacted list, not a grid slot.
+@   StartMenuTaskData +0x34C  inhibitIconFlags, the game's own answer to which
+@                       entries exist, computed once when the menu opens
+@                       (src/start_menu.c:288). This is what the panel is built
+@                       from. selectionToAction[] at +0x3A looks like the obvious
+@                       source and is a trap: past the real entries it holds
+@                       zeros, which read as POKEDEX and drew that word twice.
 SM_CURSOR_OFF = 0xD3
-SM_NUMBUTTONS_OFF = 0x2C
-SM_ACTION_OFF = 0x3A
-SM_ACTIONS = 16                 @ the StartMenuAction enum runs 0..12
+SM_INHIBIT_OFF = 0x34C          @ StartMenuTaskData.inhibitIconFlags
+SM_NORMAL_BIT = 8               @ DISABLE_RETIRE; see OneScreen_StartMenu
 
 @ The panel's record in the label blob, and the offsets inside it. Written by
 @ onescreen/labels.py::_startmenu; the layout is documented there.
@@ -382,7 +379,8 @@ SM_CELL_H = 24
 SM_N_CELLS = 25
 SM_PAL_NORM = 26
 SM_PAL_HI = 27
-SM_MAP_OFF = 32                 @ u8 action_to_label[16]
+SM_CELL_LABEL = 32              @ u8 cell_label[8], 0xFF where nothing lives
+SM_CELL_BIT = 40                @ u8 cell_bit[8], the inhibit bit gating each
 SM_ROWS_OFF = 48                @ u32 cell_rows[16], absolute tilemap addresses
 SM_BLANK = 29                   @ u8 index of the all-paper strip
 SM_PAL_BYTES = 64               @ both palettes, which the builder keeps adjacent
@@ -1866,12 +1864,12 @@ OneScreen_MenuGone:
     .thumb_func
 OneScreen_StartMenu:
     push    {r4, r5, r6, r7, lr}
-    sub     sp, #8
+    sub     sp, #16
     ldr     r7, =OneScreen_Labels
     ldr     r0, [r7]
     ldr     r1, =LABEL_MAGIC
     cmp     r0, r1
-    bne     79f                     @ blob never filled in: draw nothing at all
+    bne     57f                     @ blob never filled in: draw nothing at all
 
     @ Every pointer checked. A stale one reaching the IPC FIFO at 0x04100000 is
     @ what hung the ARM9 during the field-prompt attempt, and this walks the same
@@ -1879,29 +1877,45 @@ OneScreen_StartMenu:
     ldr     r0, =cfg_field_sys
     ldr     r0, [r0]
     cmp     r0, #0
-    beq     79f
+    beq     57f
     ldr     r6, [r0]                @ sFieldSysPtr -> FieldSystem
     cmp     r6, #0
-    beq     79f
+    beq     57f
     ldr     r4, [r6, #TASKMAN_OFF]
     cmp     r4, #0
-    beq     79f
+    beq     57f
     ldr     r0, [r4, #TASK_FUNC_OFF]
     ldr     r1, =cfg_start_menu_task
     ldr     r1, [r1]
     cmp     r1, #0
-    beq     79f                     @ the patcher could not vouch for the task
+    beq     57f                     @ the patcher could not vouch for the task
     cmp     r0, r1
-    bne     79f                     @ something else owns the field right now
+    bne     57f                     @ something else owns the field right now
     ldr     r4, [r4, #TASK_ENV_OFF] @ -> StartMenuTaskData
     cmp     r4, #0
-    beq     79f
+    beq     57f
 
     movs    r0, #SM_RECORD_OFF
     adds    r7, r7, r0              @ -> the panel's record
     movs    r0, #SM_CURSOR_OFF      @ 0xD3 is out of reach of ldrb's immediate
     ldrb    r5, [r6, r0]            @ the live cursor
 
+    @ Only the ordinary overworld grid is reproduced. Safari, the Bug Contest and
+    @ Pal Park use different ones (ov27_0225CFC8 rows 1-3) that put RETIRE first
+    @ and shift everything after it, and the variant lives in the touch overlay's
+    @ own struct where this cannot reach. All of them leave RETIRE ENABLED, while
+    @ the normal layout always inhibits it (src/start_menu.c:307) - so that bit
+    @ separates them. Anywhere else this returns 0 and the caller swaps instead,
+    @ which is what the patch always did.
+    ldr     r0, =SM_INHIBIT_OFF
+    ldr     r0, [r4, r0]
+    str     r0, [sp, #8]
+    movs    r1, #1
+    lsls    r1, r1, #SM_NORMAL_BIT
+    tst     r0, r1
+    bne     56f
+57: b       79f                     @ trampoline: the exit is past a conditional
+56:                                 @ branch's 256-byte reach from the checks
     ldr     r0, =sm_drawn
     ldr     r0, [r0]
     cmp     r0, #0
@@ -1960,35 +1974,52 @@ OneScreen_StartMenu:
     b       64b
 
 63: movs    r6, #0                  @ cell index
+    movs    r0, #0
+    str     r0, [sp, #12]           @ enabled cells seen so far
 75: ldrb    r0, [r7, #SM_N_CELLS]
     cmp     r6, r0
-    bhs     79f
+    bhs     59f
 
-    @ Which label belongs in this cell, via the game's own list.
-    ldrb    r3, [r7, #SM_BLANK]
-    ldr     r0, [r4, #SM_NUMBUTTONS_OFF]
-    ldrb    r1, [r7, #SM_N_CELLS]
-    cmp     r0, r1
-    bls     76f
-    movs    r0, r1                  @ capped: it counts 10 for a 7-slot grid
-76: cmp     r6, r0
-    bhs     77f                     @ past the end of the list: leave it blank
-    movs    r0, #SM_ACTION_OFF
-    adds    r0, r4, r0
-    ldrb    r0, [r0, r6]            @ selectionToAction[cell]
-    cmp     r0, #SM_ACTIONS
-    bhs     77f
-    movs    r1, #SM_MAP_OFF
+    @ What belongs in this cell, and have you earned it? A cell you have not is
+    @ left EMPTY rather than closing the list up, because that is what the touch
+    @ menu does - the slots are fixed and missing entries leave gaps.
+    ldrb    r3, [r7, #SM_BLANK]     @ assume empty
+    movs    r4, #0                  @ and not highlighted
+    movs    r0, #SM_CELL_LABEL
+    adds    r0, r7, r0
+    ldrb    r0, [r0, r6]
+    cmp     r0, #0xFF
+    beq     77f                     @ nothing ever lives here
+    movs    r1, #SM_CELL_BIT
     adds    r1, r7, r1
-    ldrb    r3, [r1, r0]            @ -> the strip we rasterised for it
+    ldrb    r1, [r1, r6]
+    cmp     r1, #0xFF
+    beq     76f                     @ never inhibited
+    ldr     r2, [sp, #8]
+    lsrs    r2, r2, r1
+    movs    r1, #1
+    ands    r2, r1
+    cmp     r2, #0
+    bne     77f                     @ not earned yet: leave the gap
+76: movs    r3, r0                  @ draw this label
+
+    @ The cursor counts only the entries you have, so its index is this cell's
+    @ position among the enabled ones - not the cell number.
+    ldr     r0, [sp, #12]
+    adds    r1, r0, #1
+    str     r1, [sp, #12]
+    cmp     r0, r5
+    bne     77f
+    movs    r4, #1
+
 77: ldrb    r0, [r7, #SM_STRIP_TILES]
     muls    r3, r0
     ldrh    r0, [r7, #SM_BASE_TILE]
     adds    r3, r3, r0              @ first tile of that strip
 
     ldrb    r2, [r7, #SM_PAL_NORM]
-    cmp     r6, r5
-    bne     78f
+    cmp     r4, #0
+    beq     78f
     ldrb    r2, [r7, #SM_PAL_HI]
 78: lsls    r2, r2, #12
     orrs    r3, r2                  @ a finished tilemap entry
@@ -2015,7 +2046,10 @@ OneScreen_StartMenu:
 68: adds    r6, #1
     b       75b
 
-79: add     sp, #8
+59: movs    r0, #1                  @ drawn: the caller leaves the screen alone
+    b       58f
+79: movs    r0, #0                  @ not a layout we can reproduce
+58: add     sp, #16
     pop     {r4, r5, r6, r7, pc}
     .align  2
     .pool
@@ -2201,6 +2235,8 @@ OneScreen_Poll:
     cmp     r0, #0
     bne     19f                     @ opening: the draw below picks it up
     bl      OneScreen_StartMenuWipe @ closing: take the panel off the world
+    movs    r0, #0                  @ and undo the swap, if this was a grid we
+    bl      OneScreen_SetSwap       @ could not draw and swapped for instead
     b       19f
 
 12: movs    r0, r4
@@ -2214,6 +2250,8 @@ OneScreen_Poll:
     movs    r0, #0
     str     r0, [r5]
     bl      OneScreen_StartMenuWipe @ B closed the menu
+    movs    r0, #0
+    bl      OneScreen_SetSwap
     b       19f
 
     @ Keep the panel on the world while the menu is open. Drawn every frame, not
@@ -2243,6 +2281,10 @@ OneScreen_Poll:
     movs    r0, #0                  @ it cannot fire underneath the panel
     str     r0, [r1]
     bl      OneScreen_StartMenu     @ draw it onto the world; no swap at all
+    cmp     r0, #0
+    bne     19f
+    movs    r0, #1                  @ ...unless it is a grid we cannot reproduce
+    bl      OneScreen_SetSwap       @ (Safari, the Bug Contest): swap, as before
     b       19f
 
     @ No menu of ours is up. If an app just handed the field back, the layout it

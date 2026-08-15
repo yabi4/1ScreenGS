@@ -180,6 +180,37 @@ STARTMENU_LABELS = (
 )
 SM_ACTIONS = 16                 # the enum runs 0..12; 16 keeps the table aligned
 
+# What lives in each cell, and the inhibit bit that gates it.
+#
+# This is the grid the touch menu actually uses - ov27_0225CFC8's first row - and
+# the important part is that it is FIXED. An entry you have not earned leaves its
+# slot EMPTY; the list does not close up. Early in the game the real menu shows
+# SAC alone in the left column at row 2, with the trainer card, SAUVER and
+# OPTIONS down the right, because POKEDEX, POKEMON and POKEGEAR are missing from
+# their own slots rather than absent from a list.
+#
+# Availability comes from StartMenuTaskData.inhibitIconFlags, which is the gate
+# the game itself computes (FieldSystem_GetStartMenuButtonInhibitFlags_Normal,
+# src/start_menu.c:288). Bit numbers are StartMenuActionDisable, a DIFFERENT
+# enum from StartMenuAction - POKEGEAR is action 11 but disable bit 9.
+SM_CELL_PLAN = (
+    (0,  0),                    # cell 0  POKEDEX
+    (1,  1),                    # cell 1  POKEMON
+    (2,  2),                    # cell 2  BAG
+    (11, 9),                    # cell 3  POKEGEAR
+    (3,  3),                    # cell 4  TRAINER_CARD
+    (4,  4),                    # cell 5  SAVE
+    (5,  5),                    # cell 6  OPTIONS
+    (None, None),               # cell 7  empty in this layout
+)
+
+# DISABLE_RETIRE. The normal layout always sets it (src/start_menu.c:307) while
+# Safari, the Bug Contest and Pal Park all leave RETIRE enabled - and those use
+# different grids that this cannot reproduce, since the variant lives in the
+# touch overlay's own struct. So the bit doubles as "is this the normal menu?",
+# and the hook hands the screen back to the old swap behaviour when it is clear.
+SM_NORMAL_BIT = 8
+
 # Two columns of four, because that is the grid the D-pad walks: ov27_0225D0B4
 # navigates slots 0-3 as the left column and 4-6 as the right, with up/down
 # wrapping inside a column and left/right jumping between them. Drawn as a
@@ -280,7 +311,8 @@ BLOB_HEADER = 256               # magic, rows, four geometry records, start menu
 #   +0x1B u8   pal_hi
 #   +0x1C u8   n_labels
 #   +0x1D u8   blank             index of the all-paper strip
-#   +0x20 u8   action_to_label[16]
+#   +0x20 u8   cell_label[8]     strip per cell, 0xFF if the cell is never used
+#   +0x28 u8   cell_bit[8]       inhibit bit gating it, 0xFF if never inhibited
 #   +0x30 u32  cell_rows[16]     absolute tilemap address, n_cells x cell_h
 #   +0x70 u32  frame_off         blob offset of the border's tilemap
 #   +0x74 u32  frame_base        tilemap address of the border's top-left cell
@@ -675,11 +707,16 @@ def _startmenu(font: Font, archive, off: int):
             frame_map += struct.pack(
                 "<H", (frame_tile + ry * 3 + cx) | (SM_PAL_NORM << 12))
 
-    action_to_label = bytearray([blank]) * SM_ACTIONS
-    for slot, (action, _codes) in enumerate(labels):
-        if action >= SM_ACTIONS:
-            raise LabelError(f"action {action} does not fit the {SM_ACTIONS}-entry table")
-        action_to_label[action] = slot
+    slot_of = {action: slot for slot, (action, _codes) in enumerate(labels)}
+    cell_label = bytearray([0xFF]) * SM_CELLS       # 0xFF: this cell is never used
+    cell_bit = bytearray([0xFF]) * SM_CELLS         # 0xFF: never inhibited
+    for cell, (action, bit) in enumerate(SM_CELL_PLAN):
+        if action is None:
+            continue
+        if action not in slot_of:
+            raise LabelError(f"cell {cell} wants action {action}, which has no label")
+        cell_label[cell] = slot_of[action]
+        cell_bit[cell] = bit
 
     rows = []
     for cell in range(SM_CELLS):
@@ -695,7 +732,7 @@ def _startmenu(font: Font, archive, off: int):
         off + len(pool), PAL_RAM_MAIN_BG + SM_PAL_NORM * 32,
         SM_BASE_TILE, strip_tiles, cell_w, SM_CELL_H, SM_CELLS,
         SM_PAL_NORM, SM_PAL_HI, len(labels), blank, 0)
-    record += bytes(action_to_label)
+    record += bytes(cell_label) + bytes(cell_bit)
     record += struct.pack("<16I", *rows)
     record += struct.pack(
         "<IIBBH", off + len(pool) + len(pals),

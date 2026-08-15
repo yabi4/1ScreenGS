@@ -104,8 +104,14 @@ It is laid out two columns by four, because that is the grid the game's own curs
 up and down wrap **within a column**, and left and right jump between them. A single list
 would have looked like the D-pad was broken, since DOWN only ever reaches four entries.
 
-The entries follow the game's own list, so a save that has not earned the Pokédex yet, or
-the Safari Zone, or the Bug Contest, each draw the right words in the right order.
+Entries you have not earned yet leave their slot **empty**, exactly as they do on the touch
+screen — early in the game `SAC` sits alone in the left column with `DRESSEUR`, `SAUVER` and
+`OPTIONS` down the right, and `POKéDEX`, `POKéMON` and `POKéMATOS` appear in their own
+places as you unlock them. The list never shuffles.
+
+**In the Safari Zone, the Bug Contest and Pal Park the menu still takes the screen.** Those
+use a different arrangement that this cannot reproduce, so the patch detects them and falls
+back to swapping rather than drawing something wrong.
 
 One difference from the touch screen: the trainer-card row reads `DRESSEUR` rather than
 your name. The game fills that in at runtime from a placeholder, and the labels here are

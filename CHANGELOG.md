@@ -51,10 +51,14 @@ of the world — two columns of four, the same grid the touch menu uses — and 
 follows the D-pad, including left and right jumping between the columns. Sub-menus are
 unchanged: pick `SAC` and the bag opens on the top screen exactly as before.
 
-The entries come from the game's own list rather than a fixed one. The hook reads
-`selectionToAction[]` out of `StartMenuTaskData` and maps each cell through it, so Safari,
-the Bug Contest, Pal Park and a save that has not earned the Pokédex yet all draw the right
-words in the right order without the patcher knowing which case it is in.
+The grid is fixed and entries you have not earned leave their slot **empty**, which is what
+the touch menu does — early on, `SAC` sits alone in the left column with `DRESSEUR`,
+`SAUVER` and `OPTIONS` down the right. Availability comes from `inhibitIconFlags`, the
+game's own answer, so the panel matches the touch screen entry for entry.
+
+The Safari Zone, the Bug Contest and Pal Park use a different arrangement that cannot be
+reproduced from outside the touch overlay; those are detected and still swap the screen,
+rather than being drawn wrong.
 
 `DRESSEUR` stands in for the trainer-card row, which on the touch screen shows your name:
 the game expands that at runtime from a placeholder, and patch-time rasterisation cannot

@@ -1286,8 +1286,9 @@ trusted from the decomp alone:
 | `StartMenuTaskData +0x26` | `3` | `HANDLE_INPUT` |
 | `StartMenuTaskData +0x2C` | **`10`** | `numActiveButtons`, for a **seven**-entry menu |
 | `StartMenuTaskData +0x3A` | `[0,1,2,11,3,4,5,9,10,0]` | `selectionToAction[]` |
+| `StartMenuTaskData +0x34C` | — | `inhibitIconFlags`, which is what it ended up using |
 
-Three things in that table are worth keeping.
+Four things in that table are worth keeping.
 
 **The cursor is not in the task struct.** It lives in `FieldSystem`, because the *touch
 overlay* owns it — `ov27_0225B404` writes it on every D-pad move and `start_menu.c` only
@@ -1296,13 +1297,39 @@ a latched copy taken at the moment you press A, not the moving cursor.
 
 **`numActiveButtons` overcounts.** `StartMenu_BuildActionLists` unconditionally appends the
 two registered-item buttons (`src/start_menu.c:520-521`), which the D-pad cannot reach —
-`ov27_0225D0B4` navigates seven slots. Hence the cap in `OneScreen_StartMenu`.
+`ov27_0225D0B4` navigates seven slots.
 
-**Reading `selectionToAction[]` is what makes the panel context-proof.** Decoded against
-the enum at `src/start_menu.c:49` it is POKEDEX, POKEMON, BAG, **POKEGEAR (11)**,
-TRAINER_CARD, SAVE, OPTIONS, then the two extras — exactly the order on screen. Assuming a
-fixed list instead would break in Safari, the Bug Contest, Pal Park, and on any save that
-has not earned the Pokédex or the Pokégear yet.
+**`selectionToAction[]` is a trap, and the first build fell in it.** Decoded against the
+enum at `src/start_menu.c:49` the savestate's copy is POKEDEX, POKEMON, BAG,
+**POKEGEAR (11)**, TRAINER_CARD, SAVE, OPTIONS, then the two extras — exactly the order on
+screen, which is precisely what makes it look like the right source. It is not, for two
+reasons that only a save with an incomplete menu reveals:
+
+1. **It is compacted, and the menu is not.** The grid slots are fixed: an entry you have
+   not earned leaves its slot **empty**. Early in the game the real menu shows SAC alone in
+   the left column *at row 2*, with the trainer card, SAUVER and OPTIONS down the right —
+   because POKéDEX, POKéMON and POKéMATOS are missing from their own slots, not absent from
+   a list. Packing the compacted list into consecutive cells puts every entry in the wrong
+   place and desynchronises the cursor, which indexes the compacted order.
+2. **Past the real entries it holds zeros**, and zero *is* `START_MENU_ACTION_POKEDEX`. A
+   four-entry menu drew POKéDEX twice in the right-hand column, from padding.
+
+The right source is **`inhibitIconFlags` at `+0x34C`** — the game's own answer, computed
+once when the menu opens (`FieldSystem_GetStartMenuButtonInhibitFlags_Normal`,
+`src/start_menu.c:288`). Walk the fixed cells, skip any whose bit is set, and the panel
+matches the touch screen exactly. The cursor is then each drawn cell's position *among the
+enabled ones*, which is what `+0xD3` counts.
+
+Watch the enums: they are different. `START_MENU_ACTION_POKEGEAR` is **11**, but
+`START_MENU_ACTION_DISABLE_POKEGEAR` is **9**.
+
+**The special zones cannot be reproduced, and are detected rather than drawn wrong.**
+Safari, the Bug Contest and Pal Park use different grids (`ov27_0225CFC8` rows 1-3) that
+put RETIRE in slot 0 and shift everything after it, and the active variant lives in
+overlay 27's own struct, out of reach. But all of them leave RETIRE **enabled**, while the
+normal layout always inhibits it (`src/start_menu.c:307`) — so bit 8 separates them. In
+those zones `OneScreen_StartMenu` returns 0 and the caller swaps the screen, exactly as the
+patch did before any of this.
 
 ### Why it is a grid and not a list
 

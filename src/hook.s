@@ -174,11 +174,11 @@ BATTLE_MENU_ROOT_HI = 8
 BATTLE_MENU_TWO_LO = 13
 BATTLE_MENU_TWO_HI = 17
 
-@ Main-engine BG character base. BG1CNT reads charBase 1 and engine A's DISPCNT
-@ character-base offset is 0, both dumped live mid-battle, so the message
-@ window's tiles start at 0x06004000 + baseTile*32. The blob carries the rest of
-@ the geometry in its own header so the two cannot drift.
-BG_MAIN_CHAR = 0x06004000
+@ Where the boxes live is not stated here at all - the blob carries an absolute
+@ destination address per tile row, because the battle message window and Oak's
+@ dialog box sit on different character bases (BG1 charBase 1 at 0x06004000,
+@ Oak's MAIN_0 at 0x06018000). Confirmed for the battle side by dumping BG1CNT
+@ and engine A's DISPCNT live mid-battle; Oak's comes from its own BgTemplate.
 LABEL_MAGIC  = 0x424C5331       @ "1SLB"
 
 @ The blob holds two sets of images with different geometry, each described by a
@@ -192,12 +192,16 @@ LABEL_MAGIC  = 0x424C5331       @ "1SLB"
 @ down - a separate box for the yes/no prompt is the whole point, because the
 @ blit paints everything in its area and a wide one erases the right-hand end of
 @ any question long enough to reach it.
-LABEL_GEO_SIZE = 20
+LABEL_GEO_SIZE = 28
 LABEL_GEO_YN   = 1              @ (1 << 4) | 0 = top choice, | 1 = bottom
+LABEL_GEO_OAK    = 2            @ Oak's yes/no, stacked - the generic multichoice
+                                @ handler moves on UP and DOWN
+LABEL_GEO_GENDER = 3            @ boy/girl, side by side - the gender handler moves
+                                @ on LEFT and RIGHT, so stacking implied wrong keys
 @ Reserved space for the label images; the patcher refuses rather than overrun it.
 @ Seven 14x4-tile 4bpp images plus a header is 12576 bytes, and the headroom is
 @ there so another prompt type does not mean re-picking the number.
-LABEL_BLOB_SIZE = 14336
+LABEL_BLOB_SIZE = 17408         @ reserved; the patcher refuses rather than overrun it
 
 @ The main-loop call we displace: `bl 0x0200110C` at 0x02000DB0.
 ORIG_LOOP_FN = 0x0200110C + 1   @ +1 = Thumb
@@ -373,11 +377,66 @@ STARTMENU_EXIT_HI = 13          @ START_MENU_STATE_13: jump to the exit task
 @ engine A. So the menu swaps and the pages do not, which is exactly the split
 @ that was wanted. States 0..7 cover it: 1..3 raise and run the menu, 4..6 fade
 @ it out into a topic, and 7 fades it back in when the topic returns.
+@ Oak's own two-option prompts. OakSpeechData is decompiled
+@ (include/oaks_speech_internal.h), and its OakSpeechMultichoice sits inline at
+@ +0x160 - anchored by filler_148[0x18] immediately before it, and by unk_080 and
+@ unk_114 earlier in the struct, all three named after their own offsets:
+@
+@     +0x160 unk_0        +0x161 numOptions
+@     +0x162 inPadMode    +0x163 cursorPos
+@
+@ so the count and the live selection are one struct away from the pointer the
+@ exec trampoline is already handed every frame. That pairing is what the field
+@ prompt never had, and it is why this one is tractable.
+@
+@ The states come from the enum in src/oaks_speech.c, and only the three that
+@ actually take input are drawn on - the setup and fade states around them would
+@ otherwise flash a prompt the player cannot answer yet.
+OAK_MENU_OFF     = 0x160
+OAK_NUMOPTS_OFF  = 0x161
+OAK_CURSOR_OFF   = 0x163
+OAK_GENDER_PICK    = 65         @ GENDER_SELECT_MENU_HANDLE_INPUT
+OAK_CONFIRM_GENDER = 69         @ CONFIRM_GENDER_YESNO_HANDLE_INPUT
+OAK_CONFIRM_NAME   = 98         @ CONFIRM_NAME_YESNO_HANDLE_INPUT
+
+@ The states that lead into each of those. The game has already drawn the dialog
+@ box by then, complete with the "look at the bottom screen" icon in the corner
+@ our prompt is about to occupy - so without this the icon gets a few frames to
+@ itself and visibly flashes before the prompt lands. Blitting the box's own
+@ all-paper image through the lead-in covers it, without showing a prompt the
+@ player cannot answer yet.
+@
+@     62 WAIT_FADE_OUT_TO_ASK_GENDER .. 64 WAIT_FADE_IN_GENDER_SELECT_MENU
+@     66 PREPARE_ASK_CONFIRM_GENDER  .. 68 CONFIRM_GENDER_YESNO_INIT_MENU
+@     96 PROMPT_NAME_RESTORE_GRAPHICS .. 97 CONFIRM_NAME_YESNO_INIT_MENU
+OAK_GENDER_PRE_LO  = 62
+OAK_GENDER_PRE_HI  = 64
+OAK_CONFIRM_PRE_LO = 66
+OAK_CONFIRM_PRE_HI = 68
+OAK_NAME_PRE_LO    = 96
+OAK_NAME_PRE_HI    = 97
+
+@ The "look at the bottom screen" prompt is not part of the dialog box at all -
+@ it is data->sprites[3], an object drawn above the background, which is why
+@ covering the box never hid it. The game shows it while Oak waits for you and
+@ hides it itself at SETUP_GENDER_SELECT_MENU; the old code swapped the screen
+@ away for those frames, so it was simply never seen. Now that Oak keeps the
+@ screen it is visible right up to the moment the prompt lands, and flashes.
+@
+@ So it gets hidden a few states early. This is the only place the hook writes
+@ game state other than gSystem.screensFlipped, and it is about as narrow a write
+@ as exists: one byte that only affects whether an object is rendered. Safe
+@ against the game's own bookkeeping because GF_ASSERT compiles to nothing
+@ without PM_KEEP_ASSERTS, so the drawFlag checks around Sprite_SetDrawFlag
+@ generate no code in a retail build - the game simply sets it again later.
+@
+@ sprites[6] begins at +0xD8 (spriteRenderer +0xD0, spriteGfxHandler +0xD4), so
+@ sprites[3] is +0xE4, and Sprite.drawFlag is +0x34 - both from headers whose
+@ neighbouring fields are annotated with their own offsets.
+
 OAK_STATE_OFF = 0x0C            @ OakSpeechData.state
 OAK_DATA_OFF = 0x08             @ manager->data, from &proc_state (+0x14)
 OAK_TUTORIAL_HI = 7             @ 0..7: the tutorial menu
-OAK_GENDER_LO = 62
-OAK_GENDER_HI = 93
 
 @ Field script menus - the PC option list, shop lists, NPC yes/no choices. All
 @ of these are drawn on the touch screen by the running script, inside the field
@@ -446,6 +505,9 @@ bt_drawn:       .word -1        @ label image currently blitted, -1 = nothing
 bt_cursor_off:  .word BI_CURSOR_OFF  @ learned; see OneScreen_BattleLearn
 bt_have_prev:   .word 0         @ 1 once bt_prev holds last frame's window
 bt_lock:        .word -1        @ image frozen at the moment A was pressed, -1 = free
+oak_drawn:      .word -1        @ prompt image in Oak's dialog box, -1 = none
+oak_data:       .word 0         @ diagnostics: OakSpeechData, its state,
+oak_state:      .word -1        @ sprites[3] and that sprite's drawFlag, so a
 
 dex_last:       .word -1        @ last Pokedex proc_state acted on
 dex_mode:       .word 0         @ 0 = grid/info side, 1 = the area map
@@ -987,16 +1049,14 @@ OneScreen_BattleMenu:
     adds    r4, r7, r3              @ src
     ldrh    r5, [r1, #8]            @ bytes per tile row
     movs    r7, r1                  @ 3-bit immediate cannot reach 12
-    adds    r7, #12                 @ -> the row offset table
+    adds    r7, #12                 @ -> the row address table
 
     movs    r3, #0
 35: cmp     r3, r6
     bhs     39f
-    lsls    r0, r3, #1
-    ldrh    r0, [r7, r0]
-    ldr     r1, =BG_MAIN_CHAR
-    adds    r0, r0, r1              @ dst
-    movs    r2, r5
+    lsls    r0, r3, #2
+    ldr     r0, [r7, r0]            @ absolute destination; the boxes sit on
+    movs    r2, r5                  @ different character bases
 36: ldmia   r4!, {r1}
     stmia   r0!, {r1}
     subs    r2, #4
@@ -1506,6 +1566,33 @@ OneScreen_AppIntent:
 @ Oak's opening speech - see the OAK_ constants above for the state map.
 @ Runs the app first, then routes, so ours is the last word for the frame.
 @ ---------------------------------------------------------------------------
+@ void OneScreen_OakDraw(int code) - put a prompt in Oak's dialog box, or pass a
+@ negative code to take it down. Redraws only on a change: Oak's text printer
+@ writes this window when the question appears and then leaves it alone, so
+@ unlike the battle box there is nothing here to fight for it every frame.
+    .thumb_func
+OneScreen_OakDraw:
+    push    {r4, lr}
+    ldr     r4, =oak_drawn
+    ldr     r1, [r4]
+    cmp     r0, #0
+    bge     68f
+    adds    r0, r1, #1
+    beq     69f                     @ already down
+    lsrs    r0, r1, #4              @ the set that is up - the gender box is ten
+    movs    r2, #0                  @ tiles wide and the yes/no one three, so
+    mvns    r2, r2                  @ wiping the wrong one leaves labels behind
+    str     r2, [r4]
+    bl      OneScreen_BattleWipe
+    bl      OneScreen_BattleMenu
+    b       69f
+68: str     r0, [r4]                @ redraw every frame - Oak repaints this window
+    bl      OneScreen_BattleMenu    @ as he builds each state, and a draw-once
+                                    @ would simply be painted over
+69: pop     {r4, pc}
+    .align  2
+    .pool
+
     .global OneScreen_OakExec
     .thumb_func
 OneScreen_OakExec:
@@ -1518,17 +1605,97 @@ OneScreen_OakExec:
     ldr     r4, [r4, #OAK_DATA_OFF] @ manager->data, read after so it exists
     cmp     r4, #0
     beq     61f
+    ldr     r0, =oak_data
+    str     r4, [r0]
     ldr     r0, [r4, #OAK_STATE_OFF]
+    ldr     r1, =oak_state
+    str     r0, [r1]
+
+
+    @ The three prompts that take input get drawn on Oak's own screen instead of
+    @ handing the screen over. Gender picks between two symbols, the two
+    @ confirmations between yes and no.
+    cmp     r0, #OAK_GENDER_PICK
+    beq     64f
+    cmp     r0, #OAK_CONFIRM_GENDER
+    beq     65f
+    cmp     r0, #OAK_CONFIRM_NAME
+    beq     65f
+
+    @ Lead-in states: pre-wipe the box the prompt is about to use.
+    movs    r1, r0
+    subs    r1, #OAK_GENDER_PRE_LO
+    cmp     r1, #(OAK_GENDER_PRE_HI - OAK_GENDER_PRE_LO)
+    bls     73f
+    movs    r1, r0
+    subs    r1, #OAK_CONFIRM_PRE_LO
+    cmp     r1, #(OAK_CONFIRM_PRE_HI - OAK_CONFIRM_PRE_LO)
+    bls     73f                     @ gender box: wider, and still showing
+                                    @ GARCON/FILLE that must be cleared
+    movs    r1, r0
+    subs    r1, #OAK_NAME_PRE_LO
+    cmp     r1, #(OAK_NAME_PRE_HI - OAK_NAME_PRE_LO)
+    bls     74f
+
+    @ Not a prompt: hold the narrow box's own all-paper image over the corner the
+    @ icon occupies. Text never reaches those three tiles - it would collide with
+    @ the icon if it did - so this is safe even under Oak's longest lines, and it
+    @ covers the case where the icon turns out to be tiles rather than an object.
+    push    {r0}
+    movs    r0, #LABEL_GEO_OAK
+    bl      OneScreen_BattleWipe
+    bl      OneScreen_OakDraw
+    pop     {r0}
+
+    @ Then route.
+    @
+    @ The gender flow no longer hands the screen over at all. It used to swap for
+    @ the whole of 62..93 while the three prompts above kept Oak, which flipped
+    @ the screen back and forth through the fades and setup states between them.
+    @ Only the tutorial menu still swaps: three options of running French text
+    @ will not fit beside the question the way two words do.
     cmp     r0, #OAK_TUTORIAL_HI
-    bls     63f                     @ the tutorial menu, drawn on engine B
-    subs    r0, #OAK_GENDER_LO
-    cmp     r0, #(OAK_GENDER_HI - OAK_GENDER_LO)
     bhi     60f
-63: movs    r0, #1                  @ ...as is the gender picker
+    movs    r0, #1
     b       62f
-60: movs    r0, #0                  @ the speech and the INFOS pages: engine A
+60: movs    r0, #0                  @ everything else keeps Oak's own screen
 62: bl      OneScreen_SetSwap
 61: movs    r0, r5
+    pop     {r4, r5, pc}
+
+73: movs    r0, #LABEL_GEO_GENDER
+    b       75f
+74: movs    r0, #LABEL_GEO_OAK
+75: bl      OneScreen_BattleWipe
+    bl      OneScreen_OakDraw
+    movs    r0, #0                  @ Oak keeps the screen through the lead-in
+    bl      OneScreen_SetSwap
+    movs    r0, r5
+    pop     {r4, r5, pc}
+
+64: movs    r0, #(LABEL_GEO_GENDER << 4)
+    b       66f
+65: movs    r0, #(LABEL_GEO_OAK << 4)
+66: push    {r0}
+    ldr     r1, =OAK_NUMOPTS_OFF
+    ldrb    r1, [r4, r1]
+    cmp     r1, #2
+    bne     67f                     @ not the two-option menu we expect
+    ldr     r1, =OAK_CURSOR_OFF
+    ldrb    r1, [r4, r1]
+    cmp     r1, #1
+    bhi     67f
+    pop     {r0}
+    adds    r0, r0, r1
+    bl      OneScreen_OakDraw
+    movs    r0, #0                  @ Oak keeps the screen
+    bl      OneScreen_SetSwap
+    movs    r0, r5
+    pop     {r4, r5, pc}
+67: pop     {r0}
+    movs    r0, #0
+    bl      OneScreen_SetSwap
+    movs    r0, r5
     pop     {r4, r5, pc}
     .align  2
     .pool

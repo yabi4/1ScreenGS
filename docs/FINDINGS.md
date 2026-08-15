@@ -1126,3 +1126,104 @@ multi-choice questions can be recognised reliably; it is the touch prompts that 
 one-connection-per-launch limit, no navigation timing, and the same query can be re-run
 offline. Three offline queries against a pair of savestates produced more than six live
 runs did. `tools/savestate.py` is the tool; melonDS writes slots as `<rom>.ml1`, `.ml2`.
+
+## Drawing Oak's prompts
+
+The second thing this patch draws, and much cheaper than the first, for one reason:
+`src/oaks_speech.c` is decompiled. Everything the battle menu had to be reverse-engineered
+for was simply readable here.
+
+**The state machine is named.** `OakSpeechData.state` is at `+0x0C` — which the hook was
+already reading, so the struct base was confirmed before any of this started — and the
+enum in `src/oaks_speech.c` names every value. Only the three states that actually take
+input are drawn on; the setup and fade states around them would otherwise flash a prompt
+the player cannot answer yet:
+
+| state | |
+|---|---|
+| 65 | `GENDER_SELECT_MENU_HANDLE_INPUT` |
+| 69 | `CONFIRM_GENDER_YESNO_HANDLE_INPUT` |
+| 98 | `CONFIRM_NAME_YESNO_HANDLE_INPUT` |
+
+**The count and the selection are one struct away.** `OakSpeechMultichoice` is inline at
+`+0x160`, anchored by `filler_148[0x18]` immediately before it and by `unk_080` and
+`unk_114` earlier, all three named after their own offsets:
+
+    +0x161 numOptions    +0x163 cursorPos
+
+That pairing — "how many options" and "which one is lit", reachable from a pointer the
+framework hands over every frame — is exactly what the field prompts never had, and is the
+whole reason this took an afternoon and that took days.
+
+**The two questions read differently, and the layout has to match.**
+`OakSpeech_GenderSelectHandleInput` moves on `PAD_KEY_LEFT` and `PAD_KEY_RIGHT`; the
+confirmations go through the generic multichoice handler on `PAD_KEY_UP` and
+`PAD_KEY_DOWN`. So the gender options are drawn side by side and the confirmations
+stacked. Stacking both would have implied the wrong keys.
+
+**Same tile rectangle for the third time.** `sWindowTemplate_DialogMsg` is x=2, y=19, 27x4
+— identical to the battle message window and the field dialog box. Only the layer beneath
+differs:
+
+|  | battle window[0] | field dialog box | Oak dialogWindow |
+|---|---|---|---|
+| layer | `MAIN_1` | `MAIN_3` | `MAIN_0` |
+| char base | `0x06004000` | `0x06008000` | `0x06018000` |
+| base tile | 31 | `0x237` | `0x36D` |
+| palette | 11 | 12 | 6 |
+
+Oak's palette has not been dumped, so his prompts highlight by swapping ink and paper
+rather than guessing an accent index — the window is filled with `0xF`
+(`FillWindowPixelRect(&data->dialogWindow, 0xF, ...)`), which fixes paper at 15, and
+`sFontInfos` fixes ink at 1. The battle boxes use the salmon at index 12 because that
+palette *was* dumped.
+
+**The words are the game's own.** `msg_0286` entries 7 and 16, whose row ids in the decomp
+are literally `msg_0286_boy` and `msg_0286_girl`, and `msg_0219` entries 47 and 48 for
+Oak's yes and no. A first attempt used the charmap's ♂ and ♀ (`01BB` / `01BC`) after a
+search for standalone "Boy"/"Girl" came up empty — the search was simply too narrow.
+
+**What the swap used to hide.** The old rule swapped for the whole gender range 62..93.
+Drawing the prompts while that was still in place flipped the screen back and forth through
+every fade and setup state between them. The gender flow now never swaps; only the tutorial
+menu does, because three options of running text do not fit beside the question.
+
+Two bugs worth remembering, both from the boxes being different widths:
+
+- Taking a prompt down must wipe **the box that is actually up**. The gender box is ten
+  tiles and the yes/no one three, so wiping the wrong one leaves labels on screen.
+- Going from the gender prompt to the confirmation must clear the **wider** box, or the
+  same leftovers appear.
+
+### Dead end: the flickering "look at the bottom screen" indicator
+
+A small indicator flickers for a frame or two before Oak's prompts appear. Four attempts,
+none successful; written down so the next one starts further along.
+
+It is **not** a regression in the drawing. The game shows that indicator while Oak waits
+for input and hides it itself at `SETUP_GENDER_SELECT_MENU`; the old code swapped the
+screen away for exactly those frames, so it was simply never seen.
+
+What was ruled out, by measurement rather than argument:
+
+1. **It is tiles in the dialog box, so blitting over it will do.** The hook now holds the
+   box's own all-paper image over that corner on every non-prompt frame — confirmed live,
+   `oak_drawn` reads `0x22` — and the indicator still flickers.
+2. **It is `data->sprites[3]`, the touch-to-advance object.** The decomp says that object
+   lives in the corner and is shown and hidden around these states, so the hook cleared its
+   `drawFlag` (`+0x34`, `sprites[3]` at `+0xE4`). A savestate showed **`oak_flag = 0`** —
+   the flag was already zero before the write, so that object was never being drawn. The
+   write was removed; it bought nothing, and it was the only place the hook wrote game
+   state beyond `gSystem.screensFlipped`.
+3. **The prompt states were too narrow.** Widened to cover the lead-in states, then to
+   every state of the speech. No change.
+
+What is left: something draws it *after* this hook runs in the frame. The hook draws from
+the app's own exec trampoline, and a text-printer task that runs later would repaint over
+it; a blinking indicator repainted once per blink, against a wipe reapplied every frame,
+produces exactly the observed flicker rather than a steady icon. That also fits it being
+briefer before the confirmations than before the gender question.
+
+The next step, if anyone wants it, is a savestate taken **during** the flicker: reading the
+dialog box's tiles at that instant separates "drawn after us" from "drawn somewhere else
+entirely", which is the fork none of the four attempts resolved.

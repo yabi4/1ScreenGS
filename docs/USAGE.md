@@ -63,7 +63,7 @@ the screen back to the world by itself.
 | Field menus | shop lists, NPC choices, anything a script puts on the touch screen |
 | Pokégear, main menu, trainer card, options | their UI |
 | Name entry | the keyboard |
-| New game — Oak's speech | his text, and the **tutorial menu** and **gender picker** when those come up |
+| New game — Oak's speech | his text, with his questions answered beside it (below) |
 | Flying | the flight animation, from the moment you confirm the destination |
 | Dig, Escape Rope, Teleport | the world, not the menu you set off from |
 | Evolution, and any move it teaches | the Pokémon and the narration |
@@ -88,6 +88,25 @@ exactly; it starts on `ATTAQUE` because the game's cursor does.
 There is no timing anywhere in this. Nothing steps aside after a delay, and no press
 moves the screen out from under you — the screen changes when, and only when, you have
 picked something the game draws on the touch screen.
+
+**Starting a new game**, Oak's questions are answered on his own screen:
+
+| what is happening | on top |
+|---|---|
+| Oak talking | Oak, as always |
+| the tutorial menu (three options) | the menu — this one still swaps |
+| `Es-tu un garçon?` | Oak, with `GARÇON` and `FILLE` beside the text, left/right |
+| confirming your gender | Oak, with `OUI / NON` stacked, up/down |
+| entering your name | the keyboard — the one deliberate swap |
+| confirming your name | Oak, with `OUI / NON` |
+
+The gender options sit side by side and the confirmations stack, because that is how the
+game reads them: the gender question moves on left and right, the confirmations on up and
+down. The highlight follows whichever the game's own cursor is on.
+
+One cosmetic wart: the small "look at the bottom screen" indicator can flicker for a frame
+or two just before a prompt appears. It is drawn by something that runs after this patch
+does; see `docs/FINDINGS.md` for what was ruled out.
 
 **L + R** still works during a battle. It holds until the menu you are on changes, so
 backing out of the move list hands control back to the patch.

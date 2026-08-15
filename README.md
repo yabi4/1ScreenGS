@@ -15,8 +15,8 @@ Mostly this is rerouting, not redrawing. The DS has two independent 2D engines, 
 the game sets that, and adds a small resident hook for the cases that need to change while
 you play.
 
-The one exception is the battle command menu, which is drawn onto the battle scene rather
-than swapped in. Even there nothing is replaced: the labels are the game's own words in
+The exceptions are the battle command menu and the questions Oak asks at the start of a
+new game, which are drawn onto the scene rather than swapped in. Even there nothing is replaced: the labels are the game's own words in
 the game's own font, pulled out of the ROM you supply and rasterised at patch time, so a
 French build says ATTAQUE / SAC / POKéMON / FUITE and an English one FIGHT / BAG / POKéMON
 / RUN without the patcher knowing which is which.
@@ -30,7 +30,7 @@ French build says ATTAQUE / SAC / POKéMON / FUITE and an English one FIGHT / BA
 | Field menus | shop lists, NPC choices — anything a script draws below |
 | Overworld menu (**X**) | comes up with the menu, **B** puts the world back |
 | Name entry | the keyboard |
-| New game | Oak's speech, the tutorial menu and the gender picker |
+| New game | Oak's speech, with his questions answered on his own screen |
 | Flying, Dig, Escape Rope | the animation, from the moment you confirm |
 | Evolution | the Pokémon, and any move it learns afterwards |
 | **Battles** | the scene, with the commands drawn on it; the screen only moves once you choose |
@@ -44,6 +44,12 @@ get a small **Oui / Non** box in the same message window instead of taking the s
 
 Nothing is timed: there is no delay to wait through and no press that moves the screen
 out from under you.
+
+Starting a new game works the same way. **GARÇON / FILLE** for the gender question and
+**OUI / NON** for the confirmations are drawn beside Oak's text, so the screen stays on him
+throughout — it only changes for the naming keyboard, which genuinely needs the touch
+screen. The tutorial menu still swaps: three options of running text will not fit beside
+the question the way two words do.
 
 **L + R** swaps the screens manually at any time, as an escape hatch.
 

@@ -98,6 +98,51 @@ WIN_BASE_TILE = 31
 YN_COLS = 3
 YN_BASE_COL = 24
 
+# Oak's speech asks the only questions in the game that come before you have a
+# save file, and it asks them on the same tile rectangle again - dialogWindow is
+# GF_BG_LYR_MAIN_0, x=2 y=19, 27x4, from sWindowTemplate_DialogMsg. Only the
+# layer underneath differs, for the third time:
+#
+#              battle window[0]   field dialog box   Oak dialogWindow
+#   layer      MAIN_1             MAIN_3             MAIN_0
+#   char base  0x06004000         0x06008000         0x06018000
+#   base tile  31                 0x237              0x36D
+#   palette    11                 12                 6
+#
+# Oak's char base is GX_BG_CHARBASE_0x18000 in src/oaks_speech.c's own BgTemplate.
+# Palette 6 has not been dumped, but the window is filled with 0xF
+# (FillWindowPixelRect(&data->dialogWindow, 0xF, ...)), which confirms paper 15,
+# and pret's sFontInfos fixes ink at 1 - so the prompt highlights by inverting
+# those two rather than guessing an accent colour.
+# The battle message window's own base: GF_BG_LYR_MAIN_1 with charBase 1, and
+# engine A's DISPCNT character-base offset is 0 - both dumped live mid-battle.
+BATTLE_CHAR_BASE = 0x06004000
+OAK_CHAR_BASE = 0x06018000
+OAK_BASE_TILE = 0x36D
+
+# Oak's own yes/no, from a different archive to the battle pair: msg_0219
+# entries 47 and 48. OUI/NON in French, YES/NO in English.
+OAK_MSGDATA_FILE = 219
+OAK_YESNO_MSGS = (47, 48)
+
+# The gender question does have words after all - msg_0286 entries 7 and 16, whose
+# row ids in the decomp are literally msg_0286_boy and msg_0286_girl. GARCON and
+# FILLE in French, BOY and GIRL in English, so this stays language-neutral like
+# the rest, and reads better than the charmap's bare male/female symbols.
+#
+# Laid out side by side rather than stacked, because that is how the game reads
+# it: OakSpeech_GenderSelectHandleInput moves on PAD_KEY_LEFT and PAD_KEY_RIGHT,
+# unlike the confirmations, which go through the generic multichoice handler on
+# UP and DOWN. Stacking them would have implied the wrong keys.
+#
+# 36px + 30px plus a gap is 74px, so a 10-tile box. That leaves 17 tiles, 136px,
+# for the question - "Ou bien une fille?" is about 108px.
+GENDER_MSGDATA_FILE = 286
+GENDER_MSGS = (7, 16)
+GENDER_COLS = 10
+GENDER_BASE_COL = 17
+GENDER_CELL_W = GENDER_COLS * 8
+
 CELL_H = GRID_ROWS * 8          # 32 px
 ROW_H = 16                      # one glyph tall
 CELL_W = GRID_COLS * 8          # 112 px
@@ -123,19 +168,30 @@ YN_IMAGES = 3
 # Precomputed so the resident code is a pair of copy loops with no
 # multiplication: a window row is contiguous but strides by the whole 27-tile
 # window width to reach the next one.
-def _row_offsets(base_col):
-    return tuple((WIN_BASE_TILE + r * WIN_STRIDE + base_col) * 32
+def _row_addrs(char_base, base_tile, base_col):
+    """Absolute VRAM address of each tile row of a box.
+
+    Absolute rather than an offset from one base, because the three boxes sit on
+    three different character bases - the hook holds no address of its own and
+    simply copies where it is told.
+    """
+    return tuple((char_base + (base_tile + r * WIN_STRIDE + base_col) * 32)
                  for r in range(GRID_ROWS))
 
 
-GEO_RECORD = 20                 # data_off, image_bytes, row_bytes, images, 4 row offsets
-BLOB_HEADER = 48                # magic, rows, then two geometry records
+OAK_IMAGES = 3                  # yes/no pair, wipe
+GENDER_IMAGES = 3               # the two options, wipe
+GEO_RECORD = 28                 # data_off, image_bytes, row_bytes, images, 4 row addrs
+BLOB_HEADER = 128               # magic, rows, then four geometry records
 CMD_ROW_BYTES = GRID_COLS * 32
 CMD_IMAGE_BYTES = CMD_ROW_BYTES * GRID_ROWS
 YN_ROW_BYTES = YN_COLS * 32
 YN_IMAGE_BYTES = YN_ROW_BYTES * GRID_ROWS
+GENDER_ROW_BYTES = GENDER_COLS * 32
+GENDER_IMAGE_BYTES = GENDER_ROW_BYTES * GRID_ROWS
 BLOB_SIZE = (BLOB_HEADER + CMD_IMAGES * CMD_IMAGE_BYTES
-             + YN_IMAGES * YN_IMAGE_BYTES)
+             + (YN_IMAGES + OAK_IMAGES) * YN_IMAGE_BYTES
+             + GENDER_IMAGES * GENDER_IMAGE_BYTES)
 
 
 class LabelError(Exception):
@@ -301,14 +357,42 @@ def _layout_yesno(font: Font, choices):
     return out
 
 
-def _render(font: Font, placed, selected, width=CELL_W):
-    """Return a `width` x CELL_H grid of palette indices."""
+def _inside(rect, x, y):
+    x0, y0, w, h = rect
+    return x0 <= x < x0 + w and y0 <= y < y0 + h
+
+
+def _layout_row(font: Font, items, cell_w):
+    """Place two options side by side, centred, for a left/right choice."""
+    widths = [_text_width(font, c) for c in items]
+    gap = 8
+    total = sum(widths) + gap * (len(items) - 1)
+    if total > cell_w:
+        raise LabelError(f"the row needs {total}px but only {cell_w}px are available")
+    x = (cell_w - total) // 2
+    out = []
+    for codes, w in zip(items, widths):
+        out.append((x, 0, codes, (x - gap // 2, 0, w + gap, ROW_H)))
+        x += w + gap
+    return out
+
+
+def _render(font: Font, placed, selected, width=CELL_W, invert=False):
+    """Return a `width` x CELL_H grid of palette indices.
+
+    `invert` highlights by swapping ink and paper instead of filling with
+    HILITE. The battle boxes know their palette has a usable accent at index 12
+    because it was dumped from a live battle; Oak's palette 6 has not been, so
+    its prompt uses only the two indices the font system guarantees everywhere.
+    """
+    band = FG if invert else HILITE
+    sel_rect = placed[selected][3] if selected is not None else None
     canvas = [[PAPER] * width for _ in range(CELL_H)]
-    if selected is not None:
-        x0, y0, w, h = placed[selected][3]
+    if sel_rect is not None:
+        x0, y0, w, h = sel_rect
         for y in range(y0, min(y0 + h, CELL_H)):
             for x in range(max(x0, 0), min(x0 + w, width)):
-                canvas[y][x] = HILITE
+                canvas[y][x] = band
     for x, y, codes, _rect in placed:
         for code in codes:
             glyph = font.glyph(code)
@@ -322,8 +406,13 @@ def _render(font: Font, placed, selected, width=CELL_W):
                     if not 0 <= tx < width:
                         continue
                     v = glyph[gy][gx]
-                    if v != PAPER:          # keep the highlight showing through
-                        canvas[ty][tx] = v
+                    if v == PAPER:          # keep the highlight showing through
+                        continue
+                    if invert and sel_rect is not None and _inside(sel_rect, tx, ty):
+                        if v != FG:
+                            continue        # the shadow vanishes into the band
+                        v = PAPER           # and the ink reads as paper on it
+                    canvas[ty][tx] = v
             x += w
     return canvas
 
@@ -366,7 +455,14 @@ def build(rom, log=print) -> bytes:
         raise LabelError(f"{MSGDATA_NARC} has no file {MSGDATA_FILE}")
     labels = [_decode_message(archive[MSGDATA_FILE], m) for m in LABEL_MSGS]
     choices = [_decode_message(archive[MSGDATA_FILE], m) for m in YESNO_MSGS]
-    for msg, codes in zip(LABEL_MSGS + YESNO_MSGS, labels + choices):
+    if OAK_MSGDATA_FILE >= len(archive):
+        raise LabelError(f"{MSGDATA_NARC} has no file {OAK_MSGDATA_FILE}")
+    oak = [_decode_message(archive[OAK_MSGDATA_FILE], m) for m in OAK_YESNO_MSGS]
+    if GENDER_MSGDATA_FILE >= len(archive):
+        raise LabelError(f"{MSGDATA_NARC} has no file {GENDER_MSGDATA_FILE}")
+    gender = [_decode_message(archive[GENDER_MSGDATA_FILE], m) for m in GENDER_MSGS]
+    for msg, codes in zip(LABEL_MSGS + YESNO_MSGS + OAK_YESNO_MSGS + GENDER_MSGS,
+                          labels + choices + oak + gender):
         if not codes:
             raise LabelError(f"message {msg} decoded to nothing")
 
@@ -375,32 +471,43 @@ def build(rom, log=print) -> bytes:
         raise LabelError(f"{FONT_NARC} has no file {FONT_FILE}")
     font = Font(fonts[FONT_FILE])
 
-    placed = _layout(font, labels)
-    placed_yn = _layout_yesno(font, choices)
+    # Each set: its layout, how many highlighted variants, pixel width, tile
+    # width, and where its rows land. Kept as one table so the header, the image
+    # data and the sizes cannot describe different things.
+    sets = [
+        (_layout(font, labels), 4, CELL_W, GRID_COLS, False,
+         _row_addrs(BATTLE_CHAR_BASE, WIN_BASE_TILE, GRID_BASE_COL)),
+        (_layout_yesno(font, choices), 2, YN_CELL_W, YN_COLS, False,
+         _row_addrs(BATTLE_CHAR_BASE, WIN_BASE_TILE, YN_BASE_COL)),
+        (_layout_yesno(font, oak), 2, YN_CELL_W, YN_COLS, True,
+         _row_addrs(OAK_CHAR_BASE, OAK_BASE_TILE, YN_BASE_COL)),
+        (_layout_row(font, gender, GENDER_CELL_W), 2, GENDER_CELL_W, GENDER_COLS,
+         True, _row_addrs(OAK_CHAR_BASE, OAK_BASE_TILE, GENDER_BASE_COL)),
+    ]
 
-    cmd_off = BLOB_HEADER
-    yn_off = cmd_off + CMD_IMAGES * CMD_IMAGE_BYTES
-    blob = bytearray(struct.pack("<4sBBH", BLOB_MAGIC, GRID_ROWS, 0, 0))
-    blob += struct.pack("<IIHH", cmd_off, CMD_IMAGE_BYTES, CMD_ROW_BYTES, CMD_IMAGES)
-    blob += struct.pack(f"<{GRID_ROWS}H", *_row_offsets(GRID_BASE_COL))
-    blob += struct.pack("<IIHH", yn_off, YN_IMAGE_BYTES, YN_ROW_BYTES, YN_IMAGES)
-    blob += struct.pack(f"<{GRID_ROWS}H", *_row_offsets(YN_BASE_COL))
+    blob = bytearray(struct.pack("<4sBBH", BLOB_MAGIC, GRID_ROWS, len(sets), 0))
+    off = BLOB_HEADER
+    for _placed, variants, _w, cols, _inv, addrs in sets:
+        row_bytes = cols * 32
+        image_bytes = row_bytes * GRID_ROWS
+        blob += struct.pack("<IIHH", off, image_bytes, row_bytes, variants + 1)
+        blob += struct.pack(f"<{GRID_ROWS}I", *addrs)
+        off += (variants + 1) * image_bytes
+    blob += b"\0" * (BLOB_HEADER - len(blob))
     if len(blob) != BLOB_HEADER:
         raise LabelError(f"header is {len(blob)} bytes, expected {BLOB_HEADER}")
 
-    for sel in range(4):
-        blob += _to_tiles(_render(font, placed, sel))
-    blob += b"\xFF" * CMD_IMAGE_BYTES           # the wipe image: all paper
-    for sel in range(2):
-        blob += _to_tiles(_render(font, placed_yn, sel, YN_CELL_W), YN_COLS)
-    blob += b"\xFF" * YN_IMAGE_BYTES
+    for placed_set, variants, width, cols, invert, _addrs in sets:
+        for sel in range(variants):
+            blob += _to_tiles(
+                _render(font, placed_set, sel, width, invert), cols)
+        blob += b"\xFF" * (cols * 32 * GRID_ROWS)   # the wipe: all paper
     if len(blob) != BLOB_SIZE:
         raise LabelError(f"blob is {len(blob)} bytes, expected {BLOB_SIZE}")
 
-    widths = [_text_width(font, c) for c in labels]
-    yn = [_text_width(font, c) for c in choices]
-    log(f"  Labels   : {sum(len(c) for c in labels + choices)} glyphs, commands "
-        f"{widths} px, yes/no {yn} px, {len(blob)} bytes")
+    fmt = lambda xs: [_text_width(font, c) for c in xs]
+    log(f"  Labels   : commands {fmt(labels)} px, battle yes/no {fmt(choices)} px, "
+        f"Oak yes/no {fmt(oak)} px, gender {fmt(gender)} px, {len(blob)} bytes")
     return bytes(blob)
 
 
@@ -409,9 +516,13 @@ def preview(rom, path):
     archive = _narc_files(bytes(rom.files[rom.filenames.idOf(MSGDATA_NARC)]))
     labels = [_decode_message(archive[MSGDATA_FILE], m) for m in LABEL_MSGS]
     choices = [_decode_message(archive[MSGDATA_FILE], m) for m in YESNO_MSGS]
+    oak = [_decode_message(archive[OAK_MSGDATA_FILE], m) for m in OAK_YESNO_MSGS]
+    gender = [_decode_message(archive[GENDER_MSGDATA_FILE], m) for m in GENDER_MSGS]
     font = Font(_narc_files(bytes(rom.files[rom.filenames.idOf(FONT_NARC)]))[FONT_FILE])
     placed = _layout(font, labels)
     placed_yn = _layout_yesno(font, choices)
+    placed_oak = _layout_yesno(font, oak)
+    placed_gender = _layout_row(font, gender, GENDER_CELL_W)
 
     colours = {FG: (56, 56, 72), SHADOW: (168, 168, 176),
                PAPER: (255, 255, 255), HILITE: (255, 190, 190)}

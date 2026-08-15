@@ -2,7 +2,8 @@
 
 ## Unreleased — `beta-ui`
 
-Going deeper into single-screen play than rerouting alone allows. Battles only so far.
+Going deeper into single-screen play than rerouting alone allows: the two places that
+asked you a question on the other screen now ask it on the one you are looking at.
 
 ### The battle command menu is drawn on the battle scene
 
@@ -25,6 +26,24 @@ A French build says ATTAQUE / SAC / POKéMON / FUITE, an English one FIGHT / BAG
 / RUN, from the same code. At runtime the hook only copies finished tiles into VRAM the
 game has already allocated: no font, no heap, no call into game code.
 
+### Oak's speech answers on his own screen
+
+The questions at the start of a new game no longer take the screen. **GARÇON / FILLE**
+appears beside Oak's text for the gender question, **OUI / NON** for the gender and name
+confirmations, and the highlight follows the game's own cursor.
+
+Laid out the way each question is actually read: the gender options side by side, because
+`OakSpeech_GenderSelectHandleInput` moves on left and right, and the confirmations stacked,
+because they go through the generic multichoice handler on up and down.
+
+The words come from the ROM like the battle ones — `msg_0286` for boy and girl, `msg_0219`
+for Oak's own yes and no — so this stays language-neutral.
+
+Only two swaps remain in the intro: the naming keyboard, which genuinely needs the touch
+screen, and the tutorial menu, whose three options of running text will not fit beside the
+question. The gender flow used to swap for its whole state range, which flipped the screen
+back and forth through the fades between prompts; that is gone.
+
 ### Behaviour fixed along the way
 
 - The bag and party open on the top screen the first time, not the second — they run as
@@ -41,7 +60,7 @@ game has already allocated: no font, no heap, no call into game code.
 - Region-neutral like the rest: every address is derived from the ROM, and the struct
   offsets are code-derived so they do not move between regions. Verified against IPGF,
   IPKF and IPKE.
-- Payload grows from 1452 to 16512 bytes of the ~31 KB of free ITCM.
+- Payload grows from 1452 to 19780 bytes of the ~31 KB of free ITCM.
 - A field yes/no for the overworld's prompts was attempted and abandoned — see
   `docs/FINDINGS.md` for what was disproved and why.
 

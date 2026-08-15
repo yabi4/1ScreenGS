@@ -201,7 +201,7 @@ LABEL_GEO_GENDER = 3            @ boy/girl, side by side - the gender handler mo
 @ Reserved space for the label images; the patcher refuses rather than overrun it.
 @ Seven 14x4-tile 4bpp images plus a header is 12576 bytes, and the headroom is
 @ there so another prompt type does not mean re-picking the number.
-LABEL_BLOB_SIZE = 17408         @ reserved; the patcher refuses rather than overrun it
+LABEL_BLOB_SIZE = 22528         @ reserved; the patcher refuses rather than overrun it
 
 @ The main-loop call we displace: `bl 0x0200110C` at 0x02000DB0.
 ORIG_LOOP_FN = 0x0200110C + 1   @ +1 = Thumb
@@ -344,6 +344,53 @@ TASK_ENV_OFF = 0x0C
 STARTMENU_STATE_OFF = 0x26
 STARTMENU_EXIT_LO = 12          @ START_MENU_STATE_12: fade out
 STARTMENU_EXIT_HI = 13          @ START_MENU_STATE_13: jump to the exit task
+
+@ Drawing that menu onto the world instead of swapping to it. Three fields carry
+@ everything needed, and all three were read out of a live savestate with the
+@ menu open (out/beta-ui.ml1) rather than trusted from the decomp alone:
+@
+@   FieldSystem +0xD3   the cursor. NOT in StartMenuTaskData - the touch overlay
+@                       owns it (ov27_0225B404 writes it on every D-pad move) and
+@                       start_menu.c only reads it. Read 0 with POKEDEX lit.
+@   StartMenuTaskData +0x2C  numActiveButtons. Read 10 for a SEVEN-entry menu:
+@                       StartMenu_BuildActionLists always appends the two
+@                       registered-item buttons, which the D-pad cannot reach
+@                       (ov27_0225D0B4 navigates 7 slots). Hence the cap below.
+@   StartMenuTaskData +0x3A  selectionToAction[10]. Read
+@                       [0,1,2,11,3,4,5,9,10,0] = POKEDEX, POKEMON, BAG,
+@                       POKEGEAR, TRAINER_CARD, SAVE, OPTIONS then the two
+@                       extras - exactly the order on screen. Reading this rather
+@                       than assuming a fixed list is what makes the panel right
+@                       in Safari, the Bug Contest and before you own the Pokedex.
+SM_CURSOR_OFF = 0xD3
+SM_NUMBUTTONS_OFF = 0x2C
+SM_ACTION_OFF = 0x3A
+SM_ACTIONS = 16                 @ the StartMenuAction enum runs 0..12
+
+@ The panel's record in the label blob, and the offsets inside it. Written by
+@ onescreen/labels.py::_startmenu; the layout is documented there.
+SM_RECORD_OFF = 128
+SM_TILES_OFF = 0                @ u32 blob offset of the strip pool
+SM_TILES_BYTES = 4
+SM_TILES_DEST = 8
+SM_PAL_OFF = 12
+SM_PAL_DEST = 16
+SM_BASE_TILE = 20               @ u16
+SM_STRIP_TILES = 22             @ u8
+SM_CELL_W = 23
+SM_CELL_H = 24
+SM_N_CELLS = 25
+SM_PAL_NORM = 26
+SM_PAL_HI = 27
+SM_MAP_OFF = 32                 @ u8 action_to_label[16]
+SM_ROWS_OFF = 48                @ u32 cell_rows[16], absolute tilemap addresses
+SM_BLANK = 29                   @ u8 index of the all-paper strip
+SM_PAL_BYTES = 64               @ both palettes, which the builder keeps adjacent
+SM_FRAME_OFF = 0x70             @ u32 blob offset of the border's tilemap
+SM_FRAME_BASE = 0x74            @ u32 tilemap address of its top-left cell
+SM_FRAME_ROWS = 0x78            @ u8; past ldrb's immediate, so loaded by register
+SM_FRAME_COLS = 0x79
+SM_MAP_STRIDE = 64              @ bytes per tilemap row: 32 entries of 2
 
 @ Oak's speech, overlay 53. One of the applications that sets POWCNT1 nowhere at
 @ all, so it simply inherits whatever routing it starts with - which left the
@@ -517,6 +564,7 @@ field_restore:  .word 0         @ frames left to force the world back on top
 map_frames:     .word 0         @ counts down once the fly map stops running
 map_pending:    .word 0         @ frames left waiting for the field to pick up
 prev_task:      .word 0         @ last frame's fieldSystem->taskman
+sm_drawn:       .word 0         @ 1 once the X menu's tiles and palettes are in VRAM
 
 @ Kept below the word variables above, not among them: tools/savestate.py reads
 @ that run as a flat array of words and a six-byte table in the middle of it
@@ -1790,6 +1838,235 @@ OneScreen_MenuGone:
     .pool
 
 @ ---------------------------------------------------------------------------
+@ void OneScreen_StartMenu(void)
+@ Draw the overworld menu onto the world itself, on GF_BG_LYR_MAIN_3.
+@
+@ Every other box this patch draws borrows a message window the game has already
+@ created, so the tiles are allocated, mapped and palettised and drawing is a
+@ memcpy. The overworld has no such window - the world fills the screen - so this
+@ is the one place that writes a TILEMAP as well as pixels.
+@
+@ It needs no display registers touched at all: MAIN_3 is priority 0 and the 3D
+@ world is BG0 at priority 1 (initializeSimple3DVramManager, gf_3d_render.c:46),
+@ so the panel is already in front. The strips sit at tile 0x90 - clear of the
+@ 130 tiles the menu loads for itself at tile 0, and far below the map-name
+@ window at 0x197, the only permanently allocated window on this layer.
+@
+@ They are re-uploaded on every open rather than once, because a script list menu
+@ parks its own tiles at 0x3D..0xDD and eats into ours while the menu is shut.
+@ 5 KB once per press of X is nothing, and it removes a whole class of bug.
+@
+@ Highlighting costs no pixels: the selected cell's tilemap entries are written
+@ with a different palette number. That is how the game's own menu does it too -
+@ ov27_0225B398 reloads a palette rather than moving a cursor sprite - and it is
+@ what keeps this affordable, since one finished image per highlighted entry
+@ would have been 32 KB against 11 KB of free ITCM.
+@ ---------------------------------------------------------------------------
+    .global OneScreen_StartMenu
+    .thumb_func
+OneScreen_StartMenu:
+    push    {r4, r5, r6, r7, lr}
+    sub     sp, #8
+    ldr     r7, =OneScreen_Labels
+    ldr     r0, [r7]
+    ldr     r1, =LABEL_MAGIC
+    cmp     r0, r1
+    bne     79f                     @ blob never filled in: draw nothing at all
+
+    @ Every pointer checked. A stale one reaching the IPC FIFO at 0x04100000 is
+    @ what hung the ARM9 during the field-prompt attempt, and this walks the same
+    @ kind of chain.
+    ldr     r0, =cfg_field_sys
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     79f
+    ldr     r6, [r0]                @ sFieldSysPtr -> FieldSystem
+    cmp     r6, #0
+    beq     79f
+    ldr     r4, [r6, #TASKMAN_OFF]
+    cmp     r4, #0
+    beq     79f
+    ldr     r0, [r4, #TASK_FUNC_OFF]
+    ldr     r1, =cfg_start_menu_task
+    ldr     r1, [r1]
+    cmp     r1, #0
+    beq     79f                     @ the patcher could not vouch for the task
+    cmp     r0, r1
+    bne     79f                     @ something else owns the field right now
+    ldr     r4, [r4, #TASK_ENV_OFF] @ -> StartMenuTaskData
+    cmp     r4, #0
+    beq     79f
+
+    movs    r0, #SM_RECORD_OFF
+    adds    r7, r7, r0              @ -> the panel's record
+    movs    r0, #SM_CURSOR_OFF      @ 0xD3 is out of reach of ldrb's immediate
+    ldrb    r5, [r6, r0]            @ the live cursor
+
+    ldr     r0, =sm_drawn
+    ldr     r0, [r0]
+    cmp     r0, #0
+    bne     74f                     @ strips are already in VRAM
+    ldr     r0, =OneScreen_Labels
+    ldr     r1, [r7, #SM_TILES_OFF]
+    adds    r1, r0, r1
+    ldr     r2, [r7, #SM_TILES_DEST]
+    ldr     r3, [r7, #SM_TILES_BYTES]
+72: ldmia   r1!, {r0}
+    stmia   r2!, {r0}
+    subs    r3, #4
+    bne     72b
+    ldr     r0, =OneScreen_Labels   @ both palettes at once; the builder keeps
+    ldr     r1, [r7, #SM_PAL_OFF]   @ the highlighted one immediately after
+    adds    r1, r0, r1
+    ldr     r2, [r7, #SM_PAL_DEST]
+    movs    r3, #SM_PAL_BYTES
+73: ldmia   r1!, {r0}
+    stmia   r2!, {r0}
+    subs    r3, #4
+    bne     73b
+    ldr     r0, =sm_drawn
+    movs    r1, #1
+    str     r1, [r0]
+
+74: ldrb    r0, [r7, #SM_CELL_W]    @ spilled: the inner loops need every register
+    str     r0, [sp]
+    ldrb    r0, [r7, #SM_CELL_H]
+    str     r0, [sp, #4]
+
+    @ The grey border, blitted whole - interior included, since the cells are
+    @ drawn over it straight after. Two flat loops beat working out which cells
+    @ are edges at runtime.
+    ldr     r0, =OneScreen_Labels
+    ldr     r1, [r7, #SM_FRAME_OFF]
+    adds    r1, r0, r1
+    ldr     r2, [r7, #SM_FRAME_BASE]
+    movs    r3, #SM_FRAME_ROWS
+    ldrb    r0, [r7, r3]
+64: cmp     r0, #0
+    beq     63f
+    push    {r0, r2}
+    movs    r3, #SM_FRAME_COLS
+    ldrb    r3, [r7, r3]
+62: ldrh    r0, [r1]
+    strh    r0, [r2]
+    adds    r1, #2
+    adds    r2, #2
+    subs    r3, #1
+    bne     62b
+    pop     {r0, r2}
+    movs    r3, #SM_MAP_STRIDE
+    adds    r2, r2, r3              @ down one tilemap row
+    subs    r0, #1
+    b       64b
+
+63: movs    r6, #0                  @ cell index
+75: ldrb    r0, [r7, #SM_N_CELLS]
+    cmp     r6, r0
+    bhs     79f
+
+    @ Which label belongs in this cell, via the game's own list.
+    ldrb    r3, [r7, #SM_BLANK]
+    ldr     r0, [r4, #SM_NUMBUTTONS_OFF]
+    ldrb    r1, [r7, #SM_N_CELLS]
+    cmp     r0, r1
+    bls     76f
+    movs    r0, r1                  @ capped: it counts 10 for a 7-slot grid
+76: cmp     r6, r0
+    bhs     77f                     @ past the end of the list: leave it blank
+    movs    r0, #SM_ACTION_OFF
+    adds    r0, r4, r0
+    ldrb    r0, [r0, r6]            @ selectionToAction[cell]
+    cmp     r0, #SM_ACTIONS
+    bhs     77f
+    movs    r1, #SM_MAP_OFF
+    adds    r1, r7, r1
+    ldrb    r3, [r1, r0]            @ -> the strip we rasterised for it
+77: ldrb    r0, [r7, #SM_STRIP_TILES]
+    muls    r3, r0
+    ldrh    r0, [r7, #SM_BASE_TILE]
+    adds    r3, r3, r0              @ first tile of that strip
+
+    ldrb    r2, [r7, #SM_PAL_NORM]
+    cmp     r6, r5
+    bne     78f
+    ldrb    r2, [r7, #SM_PAL_HI]
+78: lsls    r2, r2, #12
+    orrs    r3, r2                  @ a finished tilemap entry
+
+    movs    r0, #0                  @ row within the cell
+70: ldr     r2, [sp, #4]
+    cmp     r0, r2
+    bhs     68f
+    ldr     r2, [sp, #4]
+    muls    r2, r6
+    adds    r2, r2, r0
+    lsls    r2, r2, #2
+    movs    r1, #SM_ROWS_OFF
+    adds    r1, r7, r1
+    ldr     r1, [r1, r2]            @ absolute tilemap address for this row
+    ldr     r2, [sp]                @ cell_w, counted down
+71: strh    r3, [r1]
+    adds    r1, #2
+    adds    r3, #1                  @ a strip's tiles are consecutive, so the
+    subs    r2, #1                  @ entry simply walks forward across rows too
+    bne     71b
+    adds    r0, #1
+    b       70b
+68: adds    r6, #1
+    b       75b
+
+79: add     sp, #8
+    pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ void OneScreen_StartMenuWipe(void)
+@ Take the panel down and forget the upload, so the next open re-sends the
+@ strips. The game clears this whole layer when the menu tears down properly
+@ (sub_0203C38C), but not on every path that ends it - Dig and Escape Rope jump
+@ straight to an exit task - so the panel clears itself rather than trusting it.
+@ ---------------------------------------------------------------------------
+    .global OneScreen_StartMenuWipe
+    .thumb_func
+OneScreen_StartMenuWipe:
+    push    {r4, r5, r6, r7, lr}
+    ldr     r7, =OneScreen_Labels
+    ldr     r0, [r7]
+    ldr     r1, =LABEL_MAGIC
+    cmp     r0, r1
+    bne     67f
+    ldr     r0, =sm_drawn
+    ldr     r1, [r0]
+    cmp     r1, #0
+    beq     67f                     @ nothing of ours is on screen
+    movs    r1, #0
+    str     r1, [r0]
+    movs    r0, #SM_RECORD_OFF
+    adds    r7, r7, r0
+    ldr     r1, [r7, #SM_FRAME_BASE]    @ the border's rect covers the cells too
+    movs    r0, #SM_FRAME_ROWS
+    ldrb    r4, [r7, r0]
+66: cmp     r4, #0
+    beq     67f
+    movs    r0, #SM_FRAME_COLS
+    ldrb    r2, [r7, r0]
+    movs    r5, r1                  @ keep the row start
+    movs    r3, #0
+65: strh    r3, [r1]
+    adds    r1, #2
+    subs    r2, #1
+    bne     65b
+    movs    r1, r5
+    movs    r3, #SM_MAP_STRIDE
+    adds    r1, r1, r3
+    subs    r4, #1
+    b       66b
+67: pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
 @ int OneScreen_ScriptMenu(void)
 @ Returns 1 if a field script menu is up and we routed it to the top screen.
 @ Applied every frame while it is up, because the field redraws underneath it.
@@ -1867,10 +2144,18 @@ OneScreen_Poll:
     cmp     r0, r1
     beq     11f
     @ Not the overworld. KEEP the latch, so a trip into the bag/party/Pokédex and
-    @ back leaves the menu on the top screen where you left it - the field
-    @ re-asserts its own layout on return, which is what put the menu back on the
-    @ bottom. Drop the latch only in battle, where the battle logic owns the
-    @ screens.
+    @ back leaves the menu drawn where you left it. Drop the latch only in
+    @ battle, where the battle logic owns the screens.
+    @
+    @ Forget the upload, though: those apps reuse this layer's VRAM, so the
+    @ strips will not have survived. Clearing the flag makes the next draw send
+    @ them again rather than pointing the tilemap at whatever is there now.
+    ldr     r0, =sm_drawn
+    movs    r1, #0
+    str     r1, [r0]
+    ldr     r0, =cfg_app_callback
+    ldr     r0, [r0]
+    ldr     r0, [r0]
     ldr     r1, =cfg_ov12_lo
     ldr     r1, [r1]
     cmp     r0, r1
@@ -1913,7 +2198,9 @@ OneScreen_Poll:
 13: movs    r1, #1
     eors    r0, r1                  @ X toggles
     str     r0, [r5]
-    bl      OneScreen_SetSwap
+    cmp     r0, #0
+    bne     19f                     @ opening: the draw below picks it up
+    bl      OneScreen_StartMenuWipe @ closing: take the panel off the world
     b       19f
 
 12: movs    r0, r4
@@ -1923,14 +2210,15 @@ OneScreen_Poll:
     beq     15f
     ldr     r0, [r5]
     cmp     r0, #0
-    beq     15f                     @ we did not swap: leave B alone
+    beq     15f                     @ no menu of ours is up: leave B alone
     movs    r0, #0
     str     r0, [r5]
-    bl      OneScreen_SetSwap       @ B closed the menu: put the world back
+    bl      OneScreen_StartMenuWipe @ B closed the menu
     b       19f
 
-    @ Hold the routing while the menu is open. Coming back from a sub-app makes
-    @ the field re-apply its own layout, so a one-shot swap does not survive.
+    @ Keep the panel on the world while the menu is open. Drawn every frame, not
+    @ once: the field redraws underneath it, and coming back from a sub-app
+    @ rebuilds the menu task entirely.
 15: ldr     r0, [r5]
     cmp     r0, #0
     beq     16f
@@ -1945,16 +2233,16 @@ OneScreen_Poll:
     beq     14f
     movs    r0, #0
     str     r0, [r5]
+    bl      OneScreen_StartMenuWipe
     ldr     r1, =field_restore
     movs    r0, #FIELD_RESTORE_FRAMES
     str     r0, [r1]
     b       16f
 
-14: ldr     r1, =field_restore      @ the menu owns the screen: drop any pending
-    movs    r0, #0                  @ restore so it cannot fire later
+14: ldr     r1, =field_restore      @ the menu is up: drop any pending restore so
+    movs    r0, #0                  @ it cannot fire underneath the panel
     str     r0, [r1]
-    movs    r0, #1
-    bl      OneScreen_SetSwap
+    bl      OneScreen_StartMenu     @ draw it onto the world; no swap at all
     b       19f
 
     @ No menu of ours is up. If an app just handed the field back, the layout it

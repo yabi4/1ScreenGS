@@ -143,6 +143,84 @@ GENDER_COLS = 10
 GENDER_BASE_COL = 17
 GENDER_CELL_W = GENDER_COLS * 8
 
+# The overworld start menu (X), drawn onto the world itself. Unlike every box
+# above, there is no window to borrow: the world fills the screen. So this one
+# writes a TILEMAP as well as tile pixels, onto GF_BG_LYR_MAIN_3 - priority 0,
+# in front of the 3D world, enabled and transparent the whole time you walk
+# (src/field/fieldmap.c:464-535, src/gf_3d_render.c:46-48).
+#
+# Tiles go after the menu's own graphic. Task_StartMenu loads a/0/1/4 file 12 at
+# tile 0 of MAIN_3 (src/start_menu.c:468); that file is 4160 bytes uncompressed,
+# so 130 tiles, and the map-name window - the only permanently allocated one -
+# starts at 0x197. Everything between is scratch belonging to script menus and
+# the mart, none of which can be open while the start menu is. Double-booking a
+# tile range against UI that never coexists is the game's own habit: script
+# yes/no lives at 0x21F, inside the map-name window's range (src/scrcmd_c.c:131).
+STARTMENU_MSGDATA_FILE = 196
+TRAINER_MSGDATA_FILE = 282
+TRAINER_MSG = 5
+
+# StartMenuAction -> the label we draw for it. The ids are the enum at
+# src/start_menu.c:49. msg_0196 entry 3 is the trainer card, but it decodes to a
+# bare {STRVAR_1} - the game expands it to the player's name at runtime, which
+# patch-time rasterisation cannot know - so that row takes msg_0282 entry 5
+# instead: DRESSEUR in French, TRAINER in English, still the ROM's own words.
+# Actions with no label of their own (the two registered-item buttons the game
+# always appends, and the Union Room pair) fall through to the blank strip.
+STARTMENU_LABELS = (
+    (0,  STARTMENU_MSGDATA_FILE, 0),        # POKEDEX
+    (1,  STARTMENU_MSGDATA_FILE, 1),        # POKEMON
+    (2,  STARTMENU_MSGDATA_FILE, 2),        # BAG
+    (3,  TRAINER_MSGDATA_FILE, TRAINER_MSG),  # TRAINER_CARD -> DRESSEUR
+    (4,  STARTMENU_MSGDATA_FILE, 4),        # SAVE
+    (5,  STARTMENU_MSGDATA_FILE, 5),        # OPTIONS
+    (6,  STARTMENU_MSGDATA_FILE, 6),        # RUNNING_SHOES is really EXIT
+    (8,  STARTMENU_MSGDATA_FILE, 8),        # RETIRE
+    (11, STARTMENU_MSGDATA_FILE, 14),       # POKEGEAR
+)
+SM_ACTIONS = 16                 # the enum runs 0..12; 16 keeps the table aligned
+
+# Two columns of four, because that is the grid the D-pad walks: ov27_0225D0B4
+# navigates slots 0-3 as the left column and 4-6 as the right, with up/down
+# wrapping inside a column and left/right jumping between them. Drawn as a
+# single list, DOWN would cycle through the first four entries only.
+SM_COLS = 2
+SM_ROWS = 4
+SM_CELLS = SM_COLS * SM_ROWS
+SM_CELL_H = 2                   # tiles - one glyph row
+SM_CELL_W_MAX = 9               # refuse rather than clip a long translation
+
+# MAIN_3, from sBgTemplate_3 (src/field/fieldmap.c:479): charBase 0x08000,
+# screenBase 0x1000, 256x256 text, 4bpp.
+SM_CHAR_BASE = 0x06008000
+SM_SCREEN_BASE = 0x06001000
+SM_BASE_TILE = 0x90             # clear of the menu's own 130 tiles, far below 0x197
+SM_ORIGIN_Y = 0                 # flush into the top-right corner
+SM_FRAME = 1                    # tiles of border on every side - the tilemap's minimum
+SM_BORDER_PX = 3                # of those 8 pixels, how many are actually grey
+
+# Our own palette rather than one the game loads, so the colours are known
+# rather than guessed. Slots 1-5, 7, 8 and 15 are unclaimed in the plain
+# overworld; 7 and 8 sit above the ones map_preview_graphic.c would overwrite on
+# a route card, which cannot play while the menu is up anyway.
+SM_PAL_NORM = 7
+SM_PAL_HI = 8
+PAL_RAM_MAIN_BG = 0x05000000
+
+def _bgr555(r, g, b):
+    return (b << 10) | (g << 5) | r
+
+# index 0 stays transparent; 1/2/15 are ink, shadow and paper, matching the
+# indices the font rasteriser already emits. 3 and 4 are the border, which keeps
+# the same grey in both palettes - the frame is drawn once and never highlights.
+BORDER, BORDER_DK = 3, 4
+SM_PAL_NORM_RGB = {0: 0, FG: _bgr555(31, 31, 31), SHADOW: _bgr555(2, 5, 2),
+                   BORDER: _bgr555(20, 20, 21), BORDER_DK: _bgr555(9, 9, 10),
+                   PAPER: _bgr555(6, 18, 8)}
+SM_PAL_HI_RGB = {0: 0, FG: _bgr555(2, 6, 2), SHADOW: _bgr555(31, 31, 31),
+                 BORDER: _bgr555(20, 20, 21), BORDER_DK: _bgr555(9, 9, 10),
+                 PAPER: _bgr555(20, 30, 20)}
+
 CELL_H = GRID_ROWS * 8          # 32 px
 ROW_H = 16                      # one glyph tall
 CELL_W = GRID_COLS * 8          # 112 px
@@ -182,7 +260,34 @@ def _row_addrs(char_base, base_tile, base_col):
 OAK_IMAGES = 3                  # yes/no pair, wipe
 GENDER_IMAGES = 3               # the two options, wipe
 GEO_RECORD = 28                 # data_off, image_bytes, row_bytes, images, 4 row addrs
-BLOB_HEADER = 128               # magic, rows, then four geometry records
+BLOB_HEADER = 256               # magic, rows, four geometry records, start menu
+
+# The start menu's record does not fit the shape above - it describes a pool of
+# tiles and a tilemap rather than finished images - so it gets its own block at a
+# fixed offset, clear of the four 28-byte records that end at 120.
+#
+#   +0x00 u32  tiles_off        blob offset of the strip pool
+#   +0x04 u32  tiles_bytes
+#   +0x08 u32  tiles_dest       VRAM address for the pool
+#   +0x0C u32  pal_off          blob offset of the two 32-byte palettes
+#   +0x10 u32  pal_dest         palette RAM address of the normal palette
+#   +0x14 u16  base_tile        tile index the pool loads at
+#   +0x16 u8   strip_tiles      tiles in one label strip
+#   +0x17 u8   cell_w           tiles across one cell
+#   +0x18 u8   cell_h           tile rows in one cell
+#   +0x19 u8   n_cells
+#   +0x1A u8   pal_norm
+#   +0x1B u8   pal_hi
+#   +0x1C u8   n_labels
+#   +0x1D u8   blank             index of the all-paper strip
+#   +0x20 u8   action_to_label[16]
+#   +0x30 u32  cell_rows[16]     absolute tilemap address, n_cells x cell_h
+#   +0x70 u32  frame_off         blob offset of the border's tilemap
+#   +0x74 u32  frame_base        tilemap address of the border's top-left cell
+#   +0x78 u8   frame_rows
+#   +0x79 u8   frame_cols
+SM_RECORD_OFF = 128
+SM_RECORD_SIZE = 0x7C
 CMD_ROW_BYTES = GRID_COLS * 32
 CMD_IMAGE_BYTES = CMD_ROW_BYTES * GRID_ROWS
 YN_ROW_BYTES = YN_COLS * 32
@@ -417,10 +522,34 @@ def _render(font: Font, placed, selected, width=CELL_W, invert=False):
     return canvas
 
 
-def _to_tiles(canvas, cols=GRID_COLS) -> bytes:
+def _render_strip(font: Font, codes, width, height):
+    """Return one label on its own paper, centred - a start-menu cell.
+
+    No selected/unselected variants: the panel highlights by pointing the cell's
+    tilemap entries at a different palette, so one set of pixels serves both.
+    """
+    canvas = [[PAPER] * width for _ in range(height)]
+    x = (width - _text_width(font, codes)) // 2
+    y = (height - ROW_H) // 2
+    for code in codes:
+        glyph = font.glyph(code)
+        w = font.width(code)
+        for gy in range(ROW_H):
+            ty = y + gy
+            if not 0 <= ty < height:
+                continue
+            for gx in range(w):
+                tx = x + gx
+                if 0 <= tx < width and glyph[gy][gx] != PAPER:
+                    canvas[ty][tx] = glyph[gy][gx]
+        x += w
+    return canvas
+
+
+def _to_tiles(canvas, cols=GRID_COLS, rows=GRID_ROWS) -> bytes:
     """Pack a pixel grid into 4bpp DS tiles, row-major by tile."""
     out = bytearray()
-    for trow in range(GRID_ROWS):
+    for trow in range(rows):
         for tcol in range(cols):
             for y in range(8):
                 row = canvas[trow * 8 + y]
@@ -429,6 +558,157 @@ def _to_tiles(canvas, cols=GRID_COLS) -> bytes:
                     hi = row[tcol * 8 + x + 1] & 0xF
                     out.append(lo | (hi << 4))
     return bytes(out)
+
+
+def _palette(mapping) -> bytes:
+    return b"".join(struct.pack("<H", mapping.get(i, 0)) for i in range(16))
+
+
+def _frame_tile(top=False, bottom=False, left=False, right=False):
+    """One 8x8 border tile.
+
+    The ring is a whole tile wide because a tilemap has no finer unit, but only
+    the outer SM_BORDER_PX pixels are grey and the rest is panel paper - so the
+    border reads as a thin line with a little padding inside it, not a slab.
+    A pixel is grey if it is close to any edge this tile faces outward on, which
+    gives the corners their L shape without a separate case.
+    """
+    px = [[PAPER] * 8 for _ in range(8)]
+    for y in range(8):
+        for x in range(8):
+            edges = []
+            if top:
+                edges.append(y)
+            if bottom:
+                edges.append(7 - y)
+            if left:
+                edges.append(x)
+            if right:
+                edges.append(7 - x)
+            if not edges:
+                continue
+            depth = min(edges)
+            if depth < SM_BORDER_PX:
+                px[y][x] = BORDER_DK if depth == 0 else BORDER
+    return px
+
+
+# The nine tiles of a frame, in reading order: corners, edges, and the middle -
+# which is never seen, since the cells are drawn over it.
+FRAME_SHAPES = (
+    dict(top=True, left=True),   dict(top=True),    dict(top=True, right=True),
+    dict(left=True),             dict(),            dict(right=True),
+    dict(bottom=True, left=True), dict(bottom=True), dict(bottom=True, right=True),
+)
+
+
+def _startmenu_labels(archive):
+    """Decode the start menu's words, in blob-slot order."""
+    out = []
+    for action, file_id, msg in STARTMENU_LABELS:
+        if file_id >= len(archive):
+            raise LabelError(f"{MSGDATA_NARC} has no file {file_id}")
+        codes = _decode_message(archive[file_id], msg)
+        if not codes:
+            raise LabelError(f"start menu message {file_id}#{msg} decoded to nothing")
+        out.append((action, codes))
+    return out
+
+
+def _startmenu_cell_w(font: Font, labels) -> int:
+    widest = max(_text_width(font, codes) for _a, codes in labels)
+    cell_w = (widest + 8 + 7) // 8          # 4px of margin either side
+    if cell_w > SM_CELL_W_MAX:
+        raise LabelError(
+            f"the widest start menu label is {widest}px and needs {cell_w} tiles, "
+            f"more than the {SM_CELL_W_MAX} the panel allows")
+    return cell_w
+
+
+def _startmenu(font: Font, archive, off: int):
+    """Return (record, payload) for the overworld menu panel.
+
+    One tile strip per label rather than one finished panel image, because the
+    entry list is dynamic - POKEDEX and POKEGEAR only appear once you own them,
+    and Safari, the Bug Contest and Pal Park each substitute their own. The hook
+    reads the game's own selectionToAction[] and points each cell's tilemap
+    entries at the matching strip, so every context comes out right without the
+    patcher knowing which one it is.
+    """
+    labels = _startmenu_labels(archive)
+    cell_w = _startmenu_cell_w(font, labels)
+    strip_tiles = cell_w * SM_CELL_H
+    strip_bytes = strip_tiles * 32
+
+    frame_cols = SM_COLS * cell_w + 2 * SM_FRAME
+    frame_rows = SM_ROWS * SM_CELL_H + 2 * SM_FRAME
+    frame_x = 32 - frame_cols               # flush into the top-right corner
+    frame_y = SM_ORIGIN_Y
+    if frame_x < 0 or frame_y + frame_rows > 24:
+        raise LabelError(f"the panel is {frame_cols}x{frame_rows} tiles, "
+                         f"which does not fit the screen at ({frame_x}, {frame_y})")
+    origin_x = frame_x + SM_FRAME
+    origin_y = frame_y + SM_FRAME
+
+    pool = bytearray()
+    for _action, codes in labels:
+        pool += _to_tiles(_render_strip(font, codes, cell_w * 8, SM_CELL_H * 8),
+                          cell_w, SM_CELL_H)
+    blank = len(labels)                     # the all-paper strip, for empty cells
+    pool += bytes([PAPER | (PAPER << 4)]) * strip_bytes
+    frame_tile = SM_BASE_TILE + len(pool) // 32
+    for shape in FRAME_SHAPES:
+        pool += _to_tiles(_frame_tile(**shape), 1, 1)
+
+    if SM_PAL_HI != SM_PAL_NORM + 1:
+        raise LabelError("the two palettes must be adjacent: the hook sends both "
+                         "in one 64-byte copy from pal_dest")
+    pals = _palette(SM_PAL_NORM_RGB) + _palette(SM_PAL_HI_RGB)
+
+    # The border's own tilemap, ready to blit. Its interior entries are included
+    # and then overwritten by the cells, which keeps the hook to two flat loops.
+    frame_map = bytearray()
+    for r in range(frame_rows):
+        ry = 0 if r == 0 else (2 if r == frame_rows - 1 else 1)
+        for c in range(frame_cols):
+            cx = 0 if c == 0 else (2 if c == frame_cols - 1 else 1)
+            frame_map += struct.pack(
+                "<H", (frame_tile + ry * 3 + cx) | (SM_PAL_NORM << 12))
+
+    action_to_label = bytearray([blank]) * SM_ACTIONS
+    for slot, (action, _codes) in enumerate(labels):
+        if action >= SM_ACTIONS:
+            raise LabelError(f"action {action} does not fit the {SM_ACTIONS}-entry table")
+        action_to_label[action] = slot
+
+    rows = []
+    for cell in range(SM_CELLS):
+        col, row = cell // SM_ROWS, cell % SM_ROWS
+        for r in range(SM_CELL_H):
+            ty = origin_y + row * SM_CELL_H + r
+            tx = origin_x + col * cell_w
+            rows.append(SM_SCREEN_BASE + (ty * 32 + tx) * 2)
+    rows += [0] * (16 - len(rows))
+
+    record = struct.pack(
+        "<IIIIIHBBBBBBBBH", off, len(pool), SM_CHAR_BASE + SM_BASE_TILE * 32,
+        off + len(pool), PAL_RAM_MAIN_BG + SM_PAL_NORM * 32,
+        SM_BASE_TILE, strip_tiles, cell_w, SM_CELL_H, SM_CELLS,
+        SM_PAL_NORM, SM_PAL_HI, len(labels), blank, 0)
+    record += bytes(action_to_label)
+    record += struct.pack("<16I", *rows)
+    record += struct.pack(
+        "<IIBBH", off + len(pool) + len(pals),
+        SM_SCREEN_BASE + (frame_y * 32 + frame_x) * 2, frame_rows, frame_cols, 0)
+    if len(record) != SM_RECORD_SIZE:
+        raise LabelError(f"start menu record is {len(record)} bytes, "
+                         f"expected {SM_RECORD_SIZE}")
+
+    last = SM_BASE_TILE + len(pool) // 32
+    if last > 0x197:
+        raise LabelError(
+            f"the panel would end at tile {last:#x}, past the map-name window at 0x197")
+    return bytes(record), bytes(pool) + pals + bytes(frame_map)
 
 
 # ---------------------------------------------------------------------------
@@ -493,6 +773,15 @@ def build(rom, log=print) -> bytes:
         blob += struct.pack("<IIHH", off, image_bytes, row_bytes, variants + 1)
         blob += struct.pack(f"<{GRID_ROWS}I", *addrs)
         off += (variants + 1) * image_bytes
+    if len(blob) > SM_RECORD_OFF:
+        raise LabelError(f"the geometry records reach {len(blob)}, over the start "
+                         f"menu record at {SM_RECORD_OFF}")
+
+    # `off` now points past the last image, which is where the panel's own data
+    # goes, so the record can carry absolute blob offsets like the others.
+    sm_record, sm_payload = _startmenu(font, archive, off)
+    blob += b"\0" * (SM_RECORD_OFF - len(blob))
+    blob += sm_record
     blob += b"\0" * (BLOB_HEADER - len(blob))
     if len(blob) != BLOB_HEADER:
         raise LabelError(f"header is {len(blob)} bytes, expected {BLOB_HEADER}")
@@ -502,12 +791,18 @@ def build(rom, log=print) -> bytes:
             blob += _to_tiles(
                 _render(font, placed_set, sel, width, invert), cols)
         blob += b"\xFF" * (cols * 32 * GRID_ROWS)   # the wipe: all paper
-    if len(blob) != BLOB_SIZE:
-        raise LabelError(f"blob is {len(blob)} bytes, expected {BLOB_SIZE}")
+    blob += sm_payload
+    expect = BLOB_SIZE + len(sm_payload)
+    if len(blob) != expect:
+        raise LabelError(f"blob is {len(blob)} bytes, expected {expect}")
 
     fmt = lambda xs: [_text_width(font, c) for c in xs]
+    sm_labels = _startmenu_labels(archive)
     log(f"  Labels   : commands {fmt(labels)} px, battle yes/no {fmt(choices)} px, "
         f"Oak yes/no {fmt(oak)} px, gender {fmt(gender)} px, {len(blob)} bytes")
+    log(f"  X menu   : {len(sm_labels)} labels, widest "
+        f"{max(_text_width(font, c) for _a, c in sm_labels)} px, "
+        f"{_startmenu_cell_w(font, sm_labels)}x{SM_CELL_H} tile cells")
     return bytes(blob)
 
 

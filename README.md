@@ -15,8 +15,9 @@ Mostly this is rerouting, not redrawing. The DS has two independent 2D engines, 
 the game sets that, and adds a small resident hook for the cases that need to change while
 you play.
 
-The exceptions are the battle command menu and the questions Oak asks at the start of a
-new game, which are drawn onto the scene rather than swapped in. Even there nothing is replaced: the labels are the game's own words in
+The exceptions are the battle command menu, the questions Oak asks at the start of a new
+game, and the overworld menu, which are drawn onto the scene rather than swapped in. Even
+there nothing is replaced: the labels are the game's own words in
 the game's own font, pulled out of the ROM you supply and rasterised at patch time, so a
 French build says ATTAQUE / SAC / POKéMON / FUITE and an English one FIGHT / BAG / POKéMON
 / RUN without the patcher knowing which is which.
@@ -28,7 +29,7 @@ French build says ATTAQUE / SAC / POKéMON / FUITE and an English one FIGHT / BA
 | Pokédex | the species grid, and the **area map** on a Pokémon's detail level |
 | PC box | the option list and the box — moving Pokémon, item storage |
 | Field menus | shop lists, NPC choices — anything a script draws below |
-| Overworld menu (**X**) | comes up with the menu, **B** puts the world back |
+| Overworld menu (**X**) | the world, with the menu **drawn on it**; **B** closes it |
 | Name entry | the keyboard |
 | New game | Oak's speech, with his questions answered on his own screen |
 | Flying, Dig, Escape Rope | the animation, from the moment you confirm |
@@ -44,6 +45,10 @@ get a small **Oui / Non** box in the same message window instead of taking the s
 
 Nothing is timed: there is no delay to wait through and no press that moves the screen
 out from under you.
+
+The overworld menu works the same way: **X** draws it in the top-right corner of the world
+instead of taking the screen, laid out two columns by four because that is the grid the
+game's own cursor walks. Picking an entry opens it on the top screen exactly as before.
 
 Starting a new game works the same way. **GARÇON / FILLE** for the gender question and
 **OUI / NON** for the confirmations are drawn beside Oak's text, so the screen stays on him

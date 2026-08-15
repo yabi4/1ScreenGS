@@ -44,6 +44,31 @@ screen, and the tutorial menu, whose three options of running text will not fit 
 question. The gender flow used to swap for its whole state range, which flipped the screen
 back and forth through the fades between prompts; that is gone.
 
+### The overworld menu is drawn on the world
+
+**X** no longer takes the screen away. The menu appears as a panel in the top-right corner
+of the world — two columns of four, the same grid the touch menu uses — and the highlight
+follows the D-pad, including left and right jumping between the columns. Sub-menus are
+unchanged: pick `SAC` and the bag opens on the top screen exactly as before.
+
+The entries come from the game's own list rather than a fixed one. The hook reads
+`selectionToAction[]` out of `StartMenuTaskData` and maps each cell through it, so Safari,
+the Bug Contest, Pal Park and a save that has not earned the Pokédex yet all draw the right
+words in the right order without the patcher knowing which case it is in.
+
+`DRESSEUR` stands in for the trainer-card row, which on the touch screen shows your name:
+the game expands that at runtime from a placeholder, and patch-time rasterisation cannot
+know it. The word is still the ROM's own — `msg_0282` entry 5, `TRAINER` in English.
+
+This is the first thing the patch draws with **no window to borrow**. Battles and Oak's
+speech both wrote into a message window the game had already created; the overworld has
+none, so this writes a tilemap as well as pixels. It needs no display registers touched at
+all, because `MAIN_3` is already priority 0 and the 3D world is BG0 at priority 1.
+
+Highlighting costs no pixels either — the selected cell's tilemap entries are written with
+a different palette number, the same trick `ov27_0225B398` uses on the touch screen. One
+finished image per highlighted entry would have been 32 KB against 11 KB of free ITCM.
+
 ### Behaviour fixed along the way
 
 - The bag and party open on the top screen the first time, not the second — they run as
@@ -60,7 +85,10 @@ back and forth through the fades between prompts; that is gone.
 - Region-neutral like the rest: every address is derived from the ROM, and the struct
   offsets are code-derived so they do not move between regions. Verified against IPGF,
   IPKF and IPKE.
-- Payload grows from 1452 to 19780 bytes of the ~31 KB of free ITCM.
+- Payload grows from 1452 to 25300 bytes of the ~31 KB of free ITCM.
+- The X menu's panel sizes itself: the cell width comes from the widest translated label,
+  so the French build is 18 tiles across and the English one 16, and the patcher refuses
+  rather than clipping a language whose words do not fit.
 - A field yes/no for the overworld's prompts was attempted and abandoned — see
   `docs/FINDINGS.md` for what was disproved and why.
 

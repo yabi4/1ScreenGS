@@ -1227,3 +1227,115 @@ briefer before the confirmations than before the gender question.
 The next step, if anyone wants it, is a savestate taken **during** the flicker: reading the
 dialog box's tiles at that instant separates "drawn after us" from "drawn somewhere else
 entirely", which is the fork none of the four attempts resolved.
+
+## The overworld menu, drawn on the world
+
+The X menu was the first thing drawn with **no window to borrow**. Battles, the field and
+Oak all wrote into a message window the game had already created, so the tiles were
+allocated, mapped and palettised and drawing was a memcpy into them. The overworld has no
+such window — the world fills the screen — so this one writes a **tilemap** as well as tile
+pixels, which nothing else in the patch does.
+
+### Where it can be drawn, and why nothing had to be reconfigured
+
+During field play the world is **3D on BG0 at priority 1**, not a tilemap at all. That
+priority is the number the whole feature hangs on, and it is set deliberately: `FieldMap_Init`
+installs `initializeSimple3DVramManager` (`src/gf_3d_render.c:46`), which sets BG0 to 1 —
+where `GF_3DVramMan_DefaultInitializer` would have set 0.
+
+The three 2D layers come from `src/field/fieldmap.c:464-507`:
+
+| | MAIN_1 | MAIN_2 | MAIN_3 |
+|---|---|---|---|
+| charBase | `0x10000` | `0x14000` | `0x08000` |
+| screenBase | `0x0000` | `0x0800` | `0x1000` |
+| priority | 3 | 3 | **0** |
+
+So **only MAIN_3 is in front of the world**, and all three planes are enabled and merely
+transparent while you walk. Drawing there needs no register touched: no priority shuffle,
+no bank change, no `BgConfig` call. MAIN_1 is emptier — the Poké Mart is its only field
+consumer — but putting it in front would have meant a priority shuffle *and* would have
+covered the dialog box, since ties break toward the lower BG number.
+
+### Tile placement, and the game's own habit of double-booking
+
+`Task_StartMenu` loads its own graphic to **tile 0** of MAIN_3 (`src/start_menu.c:468`).
+That file — `a/0/1/4` #12 — is LZ77 with an uncompressed size of `0x1040`, so **130 tiles**.
+The only permanently allocated window on the layer is the map-name card at `0x197`
+(`src/field/draw_map_name.c:32`), which lives for the whole field session.
+
+Everything between is scratch belonging to script list menus (`0x3D`, `0xDD`), the mart,
+and the comm club — none of which can be open while the start menu is. Parking the panel at
+`0x90` is therefore safe, and it is exactly what the game does to itself: script yes/no
+sits at baseTile `0x21F` (`src/scrcmd_c.c:131`), *inside* the map-name window's range,
+because the two never coexist.
+
+The strips are re-uploaded on **every open** rather than once. A script list menu's own
+tiles run `0x3D..0xDD` and eat into ours while the menu is shut, and the bag and party reuse
+the layer wholesale. 5 KB once per press of X removes the entire class of bug.
+
+### The three fields that drive it — all read from a live savestate
+
+Read out of `out/beta-ui.ml1`, taken with the menu open and POKéDEX lit, rather than
+trusted from the decomp alone:
+
+| field | value read | what it means |
+|---|---|---|
+| `FieldSystem +0xD3` | `0` | the cursor — POKéDEX, matching the screen |
+| `FieldSystem +0xD2` | `2` | the touch overlay's mode: menu open |
+| `StartMenuTaskData +0x26` | `3` | `HANDLE_INPUT` |
+| `StartMenuTaskData +0x2C` | **`10`** | `numActiveButtons`, for a **seven**-entry menu |
+| `StartMenuTaskData +0x3A` | `[0,1,2,11,3,4,5,9,10,0]` | `selectionToAction[]` |
+
+Three things in that table are worth keeping.
+
+**The cursor is not in the task struct.** It lives in `FieldSystem`, because the *touch
+overlay* owns it — `ov27_0225B404` writes it on every D-pad move and `start_menu.c` only
+reads it. Looking for it in `StartMenuTaskData` finds `selectedIndex` at `+0x28`, which is
+a latched copy taken at the moment you press A, not the moving cursor.
+
+**`numActiveButtons` overcounts.** `StartMenu_BuildActionLists` unconditionally appends the
+two registered-item buttons (`src/start_menu.c:520-521`), which the D-pad cannot reach —
+`ov27_0225D0B4` navigates seven slots. Hence the cap in `OneScreen_StartMenu`.
+
+**Reading `selectionToAction[]` is what makes the panel context-proof.** Decoded against
+the enum at `src/start_menu.c:49` it is POKEDEX, POKEMON, BAG, **POKEGEAR (11)**,
+TRAINER_CARD, SAVE, OPTIONS, then the two extras — exactly the order on screen. Assuming a
+fixed list instead would break in Safari, the Bug Contest, Pal Park, and on any save that
+has not earned the Pokédex or the Pokégear yet.
+
+### Why it is a grid and not a list
+
+`ov27_0225D0B4` (`asm/overlay_27.s:6073`) is a `[7][4][3]` table:
+per slot, per direction, three candidate destinations, and the navigator takes the first
+whose slot is enabled — which is how it skips locked entries. Decoded, slots 0-3 are the
+left column and 4-6 the right; **up/down wrap inside a column, left/right jump between
+them**.
+
+Drawn as a single list that reads as a bug: DOWN cycles through the first four entries and
+never reaches the rest. The panel is 2x4 because the input is.
+
+### Highlighting without a second set of pixels
+
+The small boxes each ship one finished image per highlighted entry. That does not scale
+here: eight cells x two states, at 8x2 tiles a cell, is **~32 KB against 11 KB of free
+ITCM**. So the panel ships **one strip per label** and highlights by writing a different
+**palette number into the selected cell's tilemap entries** — a few halfwords a frame.
+
+That is also how the game does it. `ov27_0225B398` reloads a 32-byte OBJ palette for the
+selected icon rather than moving a cursor sprite.
+
+Storing one strip per *label* rather than one image per *cell* is what allows the runtime
+`selectionToAction[]` lookup: the tilemap points any cell at any strip, so the assignment
+is free.
+
+### The trainer-card row cannot show your name
+
+`msg_0196` entry 3 is the trainer card, and it decodes to a bare `{STRVAR_1 3, 0, 0}` — the
+game calls `BufferPlayersName` and expands it at runtime (`asm/overlay_27.s:3455`). Patch-time
+rasterisation has no save file to read, so that row uses `msg_0282` entry 5 instead:
+**DRESSEUR** in French, **TRAINER** in English. Still the ROM's own words, still
+language-neutral.
+
+The other eight come from `msg_0196` via `ov27_0225CF94`: 0 POKéDEX, 1 POKéMON, 2 BAG,
+4 SAVE, 5 OPTIONS, 6 EXIT (the enum calls it `RUNNING_SHOES`), 8 RETIRE, 14 POKéGEAR.

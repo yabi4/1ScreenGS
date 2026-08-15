@@ -39,8 +39,8 @@ unpatched ROM too — you can switch back and forth whenever you like.
 
 | button | what it does |
 |---|---|
-| **X** | opens the overworld menu **and brings it to the top screen**; press again to close |
-| **B** | closes it; the world goes back on top |
+| **X** | opens the overworld menu **as a panel on the world**; press again to close |
+| **B** | closes it |
 | **L + R** | swaps the screens manually, any time — except inside the PC box, which holds its own routing every frame; press B to leave first |
 
 Everything else plays normally. You should rarely need L+R: the patch follows the game
@@ -55,6 +55,7 @@ the screen back to the world by itself.
 | screen | on top |
 |---|---|
 | Overworld | the world (unchanged — as it should be) |
+| Overworld menu (**X**) | the world, with the menu drawn in the top-right corner (below) |
 | Bag | pocket tabs and item grid |
 | Party | the Pokémon list |
 | Pokédex — species grid | the grid |
@@ -88,6 +89,27 @@ exactly; it starts on `ATTAQUE` because the game's cursor does.
 There is no timing anywhere in this. Nothing steps aside after a delay, and no press
 moves the screen out from under you — the screen changes when, and only when, you have
 picked something the game draws on the touch screen.
+
+**The overworld menu** is drawn on the world rather than swapped in:
+
+| what is happening | on top |
+|---|---|
+| you press **X** | the world, with the menu in the top-right corner |
+| you move the **D-pad** | the world; the highlight moves with you |
+| you pick `SAC`, `POKéMON`, `POKéDEX`… | that screen, exactly as before |
+| you come back from one | the world, with the menu still up |
+| you press **B** or **X** | the world, menu gone |
+
+It is laid out two columns by four, because that is the grid the game's own cursor walks:
+up and down wrap **within a column**, and left and right jump between them. A single list
+would have looked like the D-pad was broken, since DOWN only ever reaches four entries.
+
+The entries follow the game's own list, so a save that has not earned the Pokédex yet, or
+the Safari Zone, or the Bug Contest, each draw the right words in the right order.
+
+One difference from the touch screen: the trainer-card row reads `DRESSEUR` rather than
+your name. The game fills that in at runtime from a placeholder, and the labels here are
+rasterised when you patch, long before there is a save file to read it from.
 
 **Starting a new game**, Oak's questions are answered on his own screen:
 

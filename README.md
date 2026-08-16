@@ -2,6 +2,12 @@
 
 Play **Pokémon HeartGold / SoulSilver** on a single screen.
 
+![The battle command menu drawn onto the scene](docs/img/battle.png)
+![The overworld menu drawn onto the world](docs/img/menu.png)
+
+*Both shots are the top screen on its own. The commands and the menu are **drawn onto the
+scene**, in the game's own words and font — nothing is swapped in from the touch screen.*
+
 > **v0.1b** — playable start to finish on French SoulSilver and HeartGold. See
 > [Compatibility](#compatibility) and [Status](#status).
 
@@ -16,8 +22,9 @@ the game sets that, and adds a small resident hook for the cases that need to ch
 you play.
 
 The exceptions are the battle command menu, binary questions in the overworld, the
-questions Oak asks at the start of a new game, and the overworld menu. They are drawn onto
-the scene rather than swapped in. Even there nothing is replaced: the labels are the
+questions Oak asks at the start of a new game, the overworld menu, and the shop and PC
+menus. They are drawn onto the scene rather than swapped in. Even there nothing is
+replaced: the labels are the
 game's own words in the game's own font, pulled out of the ROM you supply and rasterised
 at patch time, so a French build says ATTAQUE / SAC / POKéMON / FUITE and an English one
 FIGHT / BAG / POKéMON / RUN without the patcher knowing which is which.

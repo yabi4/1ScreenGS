@@ -204,7 +204,7 @@ LABEL_GEO_COUNT  = 5
 @ Reserved space for the label images; the patcher refuses rather than overrun it.
 @ The five geometry records, start-menu record and four unique localized image
 @ sets fit here with headroom. The field geometry aliases the battle Yes/No set.
-LABEL_BLOB_SIZE = 22528         @ reserved; the patcher refuses rather than overrun it
+LABEL_BLOB_SIZE = 24576         @ reserved; the patcher refuses rather than overrun it
 
 @ The main-loop call we displace: `bl 0x0200110C` at 0x02000DB0.
 ORIG_LOOP_FN = 0x0200110C + 1   @ +1 = Thumb
@@ -392,6 +392,55 @@ SM_FRAME_BASE = 0x74            @ u32 tilemap address of its top-left cell
 SM_FRAME_ROWS = 0x78            @ u8; past ldrb's immediate, so loaded by register
 SM_FRAME_COLS = 0x79
 SM_MAP_STRIDE = 64              @ bytes per tilemap row: 32 entries of 2
+
+@ The script list menus - the shop's ACHETER/VENDRE/QUITTER and the PC's lists.
+@ All of them are the same object: a script builds a menu, overlay 27's touch
+@ controller renders it, and the controller points straight back at it. Every
+@ offset below was read out of evolution-oak-ipgf.ml1..ml5 rather than inferred.
+@
+@   controller +0x394  the cursor. Already known here as FIELD_CHILD_CHOICE_OFF,
+@                      which was thought to be the binary-prompt choice only -
+@                      it is the list cursor too, proved by ml1 vs ml2 reading
+@                      0 then 1 as the shop cursor moved ACHETER -> VENDRE.
+@   controller +0x3A0  the menu itself. NOT +0x39C, which holds an ARM9 code
+@                      address - reading the count through that gave 255 and the
+@                      panel silently never matched.
+@       +0x9B  u8   entry count. Read 3 / 4 / 4 / 5 for the shop, both PC lists
+@                   and the PC box menu.
+@       +0x1C  String* per entry, stride 4.
+@
+@ A String is {u16 maxsize, u16 size, u32 magic, u16 codes[]}. The codes are the
+@ game's own character set, the same numbers labels.py rasterises from - ACHETER
+@ reads [299,301,306,303,318,303,316] in both places, which is what makes
+@ identifying a menu by its text sound.
+LIST_CURSOR_OFF = 0x394
+LIST_MENU_OFF = 0x3A0
+LIST_COUNT_OFF = 0x9B
+LIST_ENTRIES_OFF = 0x1C
+STRING_SIZE_OFF = 2
+STRING_DATA_OFF = 8
+
+@ The panel's record, written by onescreen/labels.py::_listmenu.
+LIST_RECORD_OFF = 272
+LIST_TILES_OFF = 0
+LIST_TILES_DEST = 4
+LIST_PAL_OFF = 8
+LIST_PAL_DEST = 12
+LIST_SCREEN_BASE = 16
+LIST_BASE_TILE = 20             @ u16
+LIST_N_MENUS = 22               @ u8
+LIST_PAL_NORM = 23
+LIST_PAL_HI = 24
+LIST_MENUS_OFF = 0x1C           @ first per-menu record
+LIST_MENU_RECORD = 40
+LIST_M_STRIP_OFF = 0            @ u16, byte offset of its strips in the pool
+LIST_M_STRIP_TILES = 2          @ u16
+LIST_M_ENTRIES = 4              @ u8
+LIST_M_CELL_W = 5
+LIST_M_CELL_H = 6
+LIST_M_KEY_LEN = 7
+LIST_M_KEY = 8                  @ u16 key[16]
+LIST_FRAME_TILES = 9
 
 @ Oak's speech, overlay 53. One of the applications that sets POWCNT1 nowhere at
 @ all, so it simply inherits whatever routing it starts with - which left the
@@ -624,6 +673,9 @@ map_frames:     .word 0         @ counts down once the fly map stops running
 map_pending:    .word 0         @ frames left waiting for the field to pick up
 prev_task:      .word 0         @ last frame's fieldSystem->taskman
 sm_drawn:       .word 0         @ 1 once the X menu's tiles and palettes are in VRAM
+list_ctrl:      .word 0         @ overlay 27's touch controller, or 0 - see FieldMode3
+list_drawn:     .word 0         @ 1 once a list menu's pool is in VRAM
+list_rect:      .word 0         @ x | cols<<8 | rows<<16 of the panel last drawn
 
 @ Kept below the word variables above, not among them: tools/savestate.py reads
 @ that run as a flat array of words and a six-byte table in the middle of it
@@ -2397,6 +2449,368 @@ OneScreen_StartMenu:
     .pool
 
 @ ---------------------------------------------------------------------------
+@ int OneScreen_ListMenu(void)
+@ Draw a script list menu - the shop's, the PC's - onto the world. 1 if drawn.
+@
+@ Same surface and the same palette-swap highlight as the X menu, but the panel
+@ is sized here rather than by the patcher: the entry count is not known until a
+@ menu opens, so the frame is built a tile at a time from the nine border tiles.
+@
+@ Which menu is this? The message ids are gone by now - ov01_021EDD68 reads each
+@ into a string and discards it - so a menu is recognised by its entry COUNT and
+@ the CHARACTERS of its first entry, both read live and compared against text
+@ rasterised at patch time. Anything unrecognised returns 0 and the caller swaps
+@ the screen, exactly as before, so an NPC choice this knows nothing about is
+@ never drawn with the wrong words.
+@ ---------------------------------------------------------------------------
+    .global OneScreen_ListMenu
+    .thumb_func
+OneScreen_ListMenu:
+    push    {r4, r5, r6, r7, lr}
+    sub     sp, #24                 @ six slots; must match the add at the exit
+    ldr     r7, =OneScreen_Labels
+    ldr     r0, [r7]
+    ldr     r1, =LABEL_MAGIC
+    cmp     r0, r1
+    bne     29f
+    ldr     r0, =LIST_RECORD_OFF
+    adds    r7, r7, r0              @ -> the panel's record
+
+    ldr     r0, =list_ctrl
+    ldr     r4, [r0]
+    cmp     r4, #0
+    beq     29f                     @ no validated controller this frame
+    movs    r0, r4                  @ FieldMode3 only vouched for it as far as
+    ldr     r1, =LIST_MENU_OFF      @ +0x394; the menu pointer sits past that
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     29f
+    ldr     r0, =LIST_CURSOR_OFF
+    ldr     r0, [r4, r0]
+    str     r0, [sp, #8]            @ the live cursor
+    ldr     r0, =LIST_MENU_OFF
+    ldr     r5, [r4, r0]
+    movs    r0, r5
+    movs    r1, #LIST_COUNT_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     29f                     @ never dereference a stale menu pointer
+    str     r5, [sp]
+    movs    r0, #LIST_COUNT_OFF
+    ldrb    r0, [r5, r0]
+    str     r0, [sp, #4]            @ entry count
+
+    ldr     r0, [r5, #LIST_ENTRIES_OFF]     @ the first entry's String
+    movs    r1, #STRING_DATA_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     29f
+    ldr     r0, [r5, #LIST_ENTRIES_OFF]
+    str     r0, [sp, #20]
+
+    @ Find the menu whose count and first entry both match.
+    movs    r0, #0
+    str     r0, [sp, #12]
+20: ldr     r0, [sp, #12]
+    ldrb    r1, [r7, #LIST_N_MENUS]
+    cmp     r0, r1
+    bhs     29f                     @ nothing we know: let the caller swap
+    movs    r1, #LIST_MENU_RECORD
+    muls    r1, r0
+    movs    r2, #LIST_MENUS_OFF
+    adds    r1, r1, r2
+    adds    r1, r7, r1              @ -> this menu's record
+    ldrb    r2, [r1, #LIST_M_ENTRIES]
+    ldr     r3, [sp, #4]
+    cmp     r2, r3
+    bne     23f
+    ldr     r2, [sp, #20]
+    ldrh    r3, [r2, #STRING_SIZE_OFF]
+    ldrb    r4, [r1, #LIST_M_KEY_LEN]
+    cmp     r3, r4
+    bne     23f
+    movs    r3, #0
+21: cmp     r3, r4
+    bhs     22f
+    lsls    r5, r3, #1
+    movs    r6, #STRING_DATA_OFF
+    adds    r6, r2, r6
+    ldrh    r6, [r6, r5]
+    movs    r0, #LIST_M_KEY
+    adds    r0, r1, r0
+    ldrh    r0, [r0, r5]
+    cmp     r6, r0
+    bne     23f
+    adds    r3, #1
+    b       21b
+22: movs    r0, r1                  @ matched
+    ldr     r1, [sp, #8]
+    str     r0, [sp, #16]
+    b       26f
+23: ldr     r0, [sp, #12]
+    adds    r0, #1
+    str     r0, [sp, #12]
+    b       20b
+
+29: movs    r0, #0
+    b       28f
+
+    @ Upload once per open: the frame tiles then this menu's strips.
+26: ldr     r0, =list_drawn
+    ldr     r0, [r0]
+    cmp     r0, #0
+    bne     27f
+    ldr     r0, =OneScreen_Labels
+    ldr     r1, [r7, #LIST_TILES_OFF]
+    adds    r1, r0, r1
+    ldr     r2, [r7, #LIST_TILES_DEST]
+    movs    r3, #LIST_FRAME_TILES
+    lsls    r3, r3, #5              @ tiles -> bytes; 288 is past a mov immediate
+30: ldmia   r1!, {r0}
+    stmia   r2!, {r0}
+    subs    r3, #4
+    bne     30b
+    ldr     r0, =OneScreen_Labels   @ then the strips, straight after the frame
+    ldr     r1, [r7, #LIST_TILES_OFF]
+    adds    r1, r0, r1
+    ldr     r0, [sp, #16]
+    ldrh    r3, [r0, #LIST_M_STRIP_OFF]
+    adds    r1, r1, r3
+    ldrh    r3, [r0, #LIST_M_STRIP_TILES]
+    ldrb    r0, [r0, #LIST_M_ENTRIES]
+    muls    r3, r0
+    lsls    r3, r3, #5              @ tiles -> bytes
+31: ldmia   r1!, {r0}
+    stmia   r2!, {r0}
+    subs    r3, #4
+    bne     31b
+    ldr     r0, =OneScreen_Labels
+    ldr     r1, [r7, #LIST_PAL_OFF]
+    adds    r1, r0, r1
+    ldr     r2, [r7, #LIST_PAL_DEST]
+    movs    r3, #SM_PAL_BYTES
+32: ldmia   r1!, {r0}
+    stmia   r2!, {r0}
+    subs    r3, #4
+    bne     32b
+    ldr     r0, =list_drawn
+    movs    r1, #1
+    str     r1, [r0]
+
+27: ldr     r0, [sp, #16]
+    ldr     r1, [sp, #8]
+    bl      OneScreen_ListDraw
+    movs    r0, #1
+28: add     sp, #24
+    pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ void OneScreen_ListDraw(r0 = matched menu record, r1 = cursor)
+@ Build the panel: the border a tile at a time, then one strip per entry with
+@ the cursor's row pointed at the highlight palette.
+@ ---------------------------------------------------------------------------
+    .thumb_func
+OneScreen_ListDraw:
+    push    {r4, r5, r6, r7, lr}
+    sub     sp, #32
+    str     r0, [sp]
+    str     r1, [sp, #4]
+    ldr     r7, =OneScreen_Labels
+    ldr     r2, =LIST_RECORD_OFF
+    adds    r7, r7, r2
+    ldrb    r2, [r0, #LIST_M_CELL_W]
+    str     r2, [sp, #8]
+    ldrb    r2, [r0, #LIST_M_CELL_H]
+    str     r2, [sp, #12]
+    ldrb    r2, [r0, #LIST_M_ENTRIES]
+    str     r2, [sp, #16]
+    ldr     r2, [sp, #8]
+    adds    r2, #2                  @ frame_cols
+    str     r2, [sp, #20]
+    movs    r3, #32
+    subs    r3, r3, r2              @ flush to the right edge
+    str     r3, [sp, #24]
+    ldr     r2, [r7, #LIST_SCREEN_BASE]
+    str     r2, [sp, #28]
+
+    @ Remember the rectangle so the wipe can clear it without the record.
+    ldr     r0, [sp, #16]
+    ldr     r1, [sp, #12]
+    muls    r0, r1
+    adds    r0, #2                  @ frame_rows
+    lsls    r0, r0, #16
+    ldr     r1, [sp, #20]
+    lsls    r1, r1, #8
+    orrs    r0, r1
+    ldr     r1, [sp, #24]
+    orrs    r0, r1
+    ldr     r1, =list_rect
+    str     r0, [r1]
+
+    movs    r4, #0                  @ frame row
+40: ldr     r0, [sp, #16]
+    ldr     r1, [sp, #12]
+    muls    r0, r1
+    adds    r0, #2
+    cmp     r4, r0
+    bhs     45f
+    cmp     r4, #0
+    bne     41f
+    movs    r5, #0
+    b       43f
+41: subs    r0, #1
+    cmp     r4, r0
+    bne     42f
+    movs    r5, #2
+    b       43f
+42: movs    r5, #1
+43: movs    r6, #0                  @ frame column
+44: ldr     r0, [sp, #20]
+    cmp     r6, r0
+    bhs     46f
+    cmp     r6, #0
+    bne     47f
+    movs    r0, #0
+    b       49f
+47: ldr     r0, [sp, #20]
+    subs    r0, #1
+    cmp     r6, r0
+    bne     48f
+    movs    r0, #2
+    b       49f
+48: movs    r0, #1
+49: movs    r1, #3
+    muls    r1, r5
+    adds    r0, r0, r1
+    ldrh    r1, [r7, #LIST_BASE_TILE]
+    adds    r0, r0, r1
+    ldrb    r1, [r7, #LIST_PAL_NORM]
+    lsls    r1, r1, #12
+    orrs    r0, r1
+    lsls    r1, r4, #5
+    ldr     r2, [sp, #24]
+    adds    r1, r1, r2
+    adds    r1, r1, r6
+    lsls    r1, r1, #1
+    ldr     r2, [sp, #28]
+    adds    r1, r2, r1
+    strh    r0, [r1]
+    adds    r6, #1
+    b       44b
+46: adds    r4, #1
+    b       40b
+
+45: movs    r4, #0                  @ entry
+50: ldr     r0, [sp, #16]
+    cmp     r4, r0
+    bhs     55f
+    ldr     r0, [sp]
+    ldrh    r0, [r0, #LIST_M_STRIP_TILES]
+    muls    r0, r4
+    ldrh    r1, [r7, #LIST_BASE_TILE]
+    adds    r0, r0, r1
+    adds    r0, #LIST_FRAME_TILES   @ the strips sit after the border tiles
+    ldrb    r1, [r7, #LIST_PAL_NORM]
+    ldr     r2, [sp, #4]
+    cmp     r4, r2
+    bne     51f
+    ldrb    r1, [r7, #LIST_PAL_HI]
+51: lsls    r1, r1, #12
+    orrs    r0, r1
+    movs    r5, #0                  @ row within the cell
+52: ldr     r1, [sp, #12]
+    cmp     r5, r1
+    bhs     54f
+    ldr     r1, [sp, #12]
+    muls    r1, r4
+    adds    r1, r1, r5
+    adds    r1, #1                  @ past the border's top row
+    lsls    r1, r1, #5
+    ldr     r2, [sp, #24]
+    adds    r1, r1, r2
+    adds    r1, #1                  @ and its left column
+    lsls    r1, r1, #1
+    ldr     r2, [sp, #28]
+    adds    r1, r2, r1
+    ldr     r2, [sp, #8]            @ cell_w, counted down
+53: strh    r0, [r1]
+    adds    r1, #2
+    adds    r0, #1
+    subs    r2, #1
+    bne     53b
+    adds    r5, #1
+    b       52b
+54: adds    r4, #1
+    b       50b
+
+55: add     sp, #32
+    pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ void OneScreen_ListClear(void)
+@ Blank the rectangle the panel last occupied, from list_rect.
+@ ---------------------------------------------------------------------------
+    .thumb_func
+OneScreen_ListClear:
+    push    {r4, r5, r6, r7, lr}
+    ldr     r0, =list_rect
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     18f
+    movs    r1, #0xFF
+    movs    r4, r0
+    ands    r4, r1                  @ x
+    lsrs    r5, r0, #8
+    ands    r5, r1                  @ cols
+    lsrs    r6, r0, #16
+    ands    r6, r1                  @ rows
+    ldr     r7, =OneScreen_Labels
+    ldr     r0, =LIST_RECORD_OFF
+    adds    r7, r7, r0
+    ldr     r7, [r7, #LIST_SCREEN_BASE]
+    movs    r0, #0                  @ row
+17: cmp     r0, r6
+    bhs     18f
+    lsls    r1, r0, #5
+    adds    r1, r1, r4
+    lsls    r1, r1, #1
+    adds    r1, r7, r1
+    movs    r2, r5
+    movs    r3, #0
+16: strh    r3, [r1]
+    adds    r1, #2
+    subs    r2, #1
+    bne     16b
+    adds    r0, #1
+    b       17b
+18: pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ void OneScreen_ListMenuWipe(void)
+@ Clear the panel and forget the upload, so the next menu re-sends its strips.
+@ ---------------------------------------------------------------------------
+    .global OneScreen_ListMenuWipe
+    .thumb_func
+OneScreen_ListMenuWipe:
+    push    {r4, lr}
+    ldr     r0, =list_drawn
+    ldr     r1, [r0]
+    cmp     r1, #0
+    beq     19f
+    movs    r1, #0
+    str     r1, [r0]
+    bl      OneScreen_ListClear
+19: pop     {r4, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
 @ void OneScreen_StartMenuWipe(void)
 @ Take the panel down and forget the upload, so the next open re-sends the
 @ strips. The game clears this whole layer when the menu tears down properly
@@ -2478,6 +2892,10 @@ OneScreen_MainRamRange:
 OneScreen_FieldMode3:
     push    {r3, r4, r5, r6, r7, lr}
     movs    r4, r0                  @ FieldSystem
+    ldr     r1, =list_ctrl          @ forget last frame's controller; it is only
+    movs    r0, #0                  @ republished below once revalidated
+    str     r0, [r1]
+    movs    r0, r4
 
     movs    r1, #FIELD_TOUCH_TASK_OFF
     bl      OneScreen_MainRamRange
@@ -2534,6 +2952,8 @@ OneScreen_FieldMode3:
     ldr     r0, [r7, #FIELD_CHILD_FS_OFF]
     cmp     r0, r4
     bne     49f                     @ stale controller from another field
+    ldr     r0, =list_ctrl          @ fully validated: OneScreen_ListMenu can use it
+    str     r7, [r0]
 
     ldr     r5, [r7, #FIELD_CHILD_STATE_OFF]
     cmp     r5, #FIELD_CHILD_STATE_HI
@@ -2650,11 +3070,24 @@ OneScreen_ScriptMenu:
     ldr     r1, =script_menu
     movs    r0, #1
     str     r0, [r1]
+
+    @ A list menu we can reproduce is drawn on the world; anything else - an NPC
+    @ choice whose words we never rasterised - swaps, exactly as before.
+    bl      OneScreen_ListMenu
+    cmp     r0, #0
+    beq     55f
+    movs    r0, #0                  @ engine A: keep the world, panel drawn on it
+    bl      OneScreen_SetSwap
+    movs    r0, #1
+    pop     {r3, r4, r5, pc}
+55: bl      OneScreen_ListMenuWipe
+    movs    r0, #1
     bl      OneScreen_SetSwap       @ engine B: native list/fallback on upper LCD
     movs    r0, #1
     pop     {r3, r4, r5, pc}
 
 57: bl      OneScreen_FieldYesNoWipe
+    bl      OneScreen_ListMenuWipe
     ldr     r4, =script_menu
     ldr     r0, [r4]
     cmp     r0, #0

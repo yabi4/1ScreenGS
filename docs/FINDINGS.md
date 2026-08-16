@@ -1491,3 +1491,64 @@ language-neutral.
 
 The other eight come from `msg_0196` via `ov27_0225CF94`: 0 POKéDEX, 1 POKéMON, 2 BAG,
 4 SAVE, 5 OPTIONS, 6 EXIT (the enum calls it `RUNNING_SHOES`), 8 RETIRE, 14 POKéGEAR.
+
+
+## The script list menus (the shop's, the PC's)
+
+The shop's `ACHETER / VENDRE / QUITTER` and all three PC lists are **the same
+object**. A script builds a menu (`ScrCmd_064` then `ScrCmd_066` per entry),
+overlay 27's touch controller renders it, and the controller keeps a pointer
+straight back to it. One renderer covers all of them, and the PC box menu too,
+despite looking like a different system entirely.
+
+### The chain, all read from savestates rather than inferred
+
+```
+FieldSystem -> +0xD8 outer SysTask -> +0x10 outer data
+            -> +0x04 child SysTask -> +0x10 controller
+     controller +0x394  cursor
+     controller +0x3A0  the menu
+         menu +0x9B  entry count
+         menu +0x1C  String* per entry, stride 4
+     String: +0x00 maxsize, +0x02 size, +0x04 magic, +0x08 u16 codes
+```
+
+**`+0x394` was already in this file under another name.** It was recorded as
+`FIELD_CHILD_CHOICE_OFF`, the binary-prompt choice. It is the list cursor as
+well - proved by two savestates of one shop menu reading 0 then 1 as the cursor
+moved ACHETER -> VENDRE. The field that made this feature possible had been
+sitting in the hook since the field-prompt work.
+
+**`+0x39C` is not the menu.** It holds an ARM9 code address. Reading the entry
+count through it gives 255, no menu matches, and the panel silently never
+appears while everything still works - because unrecognised menus fall back to
+swapping. Cost an entire build to notice; the fix was four bytes.
+
+### Menus cannot be identified by message id
+
+`ov01_021EDD68` reads each entry's id into a string, expands placeholders into a
+pre-allocated `String`, stores that and the entry's return value, and **throws
+the id away**. Since this same code draws every NPC choice in the game, and
+drawing the wrong words would be worse than swapping, a menu is recognised by
+its **entry count plus the characters of its first entry**, compared against text
+rasterised at patch time. The numbers are the game's own character set and match
+exactly: ACHETER is `[299,301,306,303,318,303,316]` in the ROM and in RAM.
+
+Every menu worth drawing has a first entry free of placeholders, which matters -
+the player's own PC row expands to their name and could never be matched.
+
+### What the default archive gives away
+
+When a script passes no msgdata (`ScrCmd_064`), `ov01_021EDAFC` loads
+**`msg_0191`** itself. That is where every one of these menus' words lives:
+321/322/323 for the shop, 62/63/64/75 for the PC list, 73/74/65/66 for the PC's
+item menu, 67-72 for the box menu.
+
+### Why only the shop is drawn
+
+Storage, not difficulty. The four label sets need **15.3 KB** together; after the
+shop there are about 3.6 KB left between free ITCM and the blob reservation. The
+PC box alone needs 8.3 KB and 269 VRAM tiles against the 263 free below the
+map-name window, because its entries are two lines tall. The remaining menus need
+the tile pool compressed - it is almost all paper and would RLE well - rather
+than any new reverse engineering. Everything they need is in this section.

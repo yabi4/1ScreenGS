@@ -130,6 +130,14 @@ One difference from the touch screen: the trainer-card row reads `DRESSEUR` rath
 your name. The game fills that in at runtime from a placeholder, and the labels here are
 rasterised when you patch, long before there is a save file to read it from.
 
+**In a shop**, the clerk's `ACHETER / VENDRE / QUITTER` is drawn in the top-right corner
+instead of taking the screen. Picking `ACHETER` opens the item list on the top screen as
+before.
+
+Other list menus — NPC choices, the PC's own menus — still swap. The patch only draws a
+menu it recognises by name, so one it has never seen keeps the old behaviour rather than
+risking the wrong words on screen.
+
 **Starting a new game**, Oak's questions are answered on his own screen:
 
 | what is happening | on top |

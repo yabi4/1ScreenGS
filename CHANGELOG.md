@@ -116,6 +116,19 @@ Highlighting costs no pixels either — the selected cell's tilemap entries are 
 a different palette number, the same trick `ov27_0225B398` uses on the touch screen. One
 finished image per highlighted entry would have been 32 KB against 11 KB of free ITCM.
 
+### The shop menu is drawn on the world
+
+`ACHETER / VENDRE / QUITTER` appears in the top-right corner and the screen stays on the
+world; picking one opens it on the top screen as before.
+
+The machinery behind it is general — the shop's menu and all three of the PC's are the
+same object underneath — but a menu is only drawn if the patch **recognises** it, by its
+entry count and the characters of its first entry. Anything else swaps, as it always did,
+so an NPC choice the patch has never seen can never come up with the wrong words on it.
+
+Only the shop is wired up so far. The rest is a storage limit rather than an unknown: the
+four label sets need 15 KB and there are about 3.6 KB left. See `docs/FINDINGS.md`.
+
 ### Behaviour fixed along the way
 
 - The bag and party open on the top screen the first time, not the second — they run as

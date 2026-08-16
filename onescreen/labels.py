@@ -255,6 +255,29 @@ SM_PAL_HI_RGB = {0: 0, FG: _bgr555(2, 6, 2), SHADOW: _bgr555(31, 31, 31),
                  BORDER: _bgr555(20, 20, 21), BORDER_DK: _bgr555(9, 9, 10),
                  PAPER: _bgr555(20, 30, 20)}
 
+# --- the script list menus: the shop's and the PC's ---------------------------
+#
+# One mechanism covers them all, because they are all the same object: a script
+# builds a menu (ScrCmd_064/066), overlay 27's touch controller renders it, and
+# the controller keeps a pointer straight back to it. Verified across five
+# savestates - the shop, both PC lists and the PC box menu all arrive here.
+#
+# The menu cannot be recognised by message id: ov01_021EDD68 reads each id into a
+# string and throws the id away. What survives is the expanded text, so a menu is
+# identified by its entry COUNT plus the characters of its FIRST entry, both read
+# live. Every menu here has a first entry free of placeholders, which matters -
+# the player's own PC row expands to their name and could never be matched.
+LIST_MSGDATA_FILE = 191
+LIST_KEY_MAX = 16               # codes compared; the longest first entry is 17
+LIST_MENU_RECORD = 40
+LIST_CELL_H = 2                 # tiles per entry - one glyph row
+LIST_FRAME_TILES = 9            # the border, shared with the X menu's frame
+
+# Each menu: a name, and its entries as msg_0191 indices in on-screen order.
+LIST_MENUS = (
+    ("shop", (321, 322, 323)),          # ACHETER / VENDRE / QUITTER
+)
+
 CELL_H = GRID_ROWS * 8          # 32 px
 ROW_H = 16                      # one glyph tall
 CELL_W = GRID_COLS * 8          # 112 px
@@ -298,7 +321,7 @@ OAK_IMAGES = 3                  # yes/no pair, wipe
 GENDER_IMAGES = 3               # the two options, wipe
 GEO_RECORD = 28                 # data_off, image_bytes, row_bytes, images, 4 row addrs
 GEO_COUNT = 5                   # command, battle yes/no, Oak, gender, field yes/no
-BLOB_HEADER = 272               # magic, five geometry records, start menu
+BLOB_HEADER = 512               # magic, five geometry records, start menu, lists
 
 # The start menu's record does not fit the shape above - it describes a pool of
 # tiles and a tilemap rather than finished images - so it gets its own block at a
@@ -327,6 +350,31 @@ BLOB_HEADER = 272               # magic, five geometry records, start menu
 #   +0x79 u8   frame_cols
 SM_RECORD_OFF = 148
 SM_RECORD_SIZE = 0x7C
+
+# The script list menus get their own record, after the start menu's. Unlike the
+# X menu this one carries almost no addresses: the entry count is not known until
+# a menu opens, so the panel is sized at runtime and the hook works the tilemap
+# addresses out for itself.
+#
+#   +0x00 u32  tiles_off      blob offset of the pool: 9 frame tiles, then strips
+#   +0x04 u32  tiles_dest     VRAM address the pool loads at
+#   +0x08 u32  pal_off        blob offset of the two palettes
+#   +0x0C u32  pal_dest       palette RAM address of the normal one
+#   +0x10 u32  screen_base    MAIN_3 tilemap origin
+#   +0x14 u16  base_tile
+#   +0x16 u8   n_menus
+#   +0x17 u8   pal_norm
+#   +0x18 u8   pal_hi
+#   +0x1C      menu[n_menus], LIST_MENU_RECORD bytes each:
+#                +0x00 u16 strip_off    byte offset of its strips within the pool
+#                +0x02 u16 strip_tiles  tiles in one entry's strip
+#                +0x04 u8  n_entries
+#                +0x05 u8  cell_w
+#                +0x06 u8  cell_h
+#                +0x07 u8  key_len      codes in the identifying first entry
+#                +0x08 u16 key[LIST_KEY_MAX]
+LIST_RECORD_OFF = 272
+LIST_RECORD_HEAD = 0x1C
 CMD_ROW_BYTES = GRID_COLS * 32
 CMD_IMAGE_BYTES = CMD_ROW_BYTES * GRID_ROWS
 YN_ROW_BYTES = YN_COLS * 32
@@ -754,6 +802,69 @@ def _startmenu(font: Font, archive, off: int):
     return bytes(record), bytes(pool) + pals + bytes(frame_map)
 
 
+def _listmenu(font: Font, archive, off: int):
+    """Return (record, payload) for the script list menus.
+
+    The pool is the nine border tiles followed by every supported menu's label
+    strips. Only one menu's strips are ever uploaded - they all load at the same
+    base tile, because two of these can never be open at once, and that is what
+    keeps the panel inside the tiles free on MAIN_3.
+    """
+    if LIST_MSGDATA_FILE >= len(archive):
+        raise LabelError(f"{MSGDATA_NARC} has no file {LIST_MSGDATA_FILE}")
+    src = archive[LIST_MSGDATA_FILE]
+
+    pool = bytearray()
+    for shape in FRAME_SHAPES:
+        pool += _to_tiles(_frame_tile(**shape), 1, 1)
+
+    menus = []
+    for name, msgs in LIST_MENUS:
+        entries = []
+        for msg in msgs:
+            codes = _decode_message(src, msg)
+            if not codes:
+                raise LabelError(f"list menu {name}: message {msg} decoded to nothing")
+            entries.append(codes)
+        widest = max(_text_width(font, c) for c in entries)
+        cell_w = (widest + 8 + 7) // 8
+        if cell_w + 2 > 32:
+            raise LabelError(f"list menu {name} needs {cell_w + 2} tiles, wider than the screen")
+        key = entries[0]
+        if len(key) > LIST_KEY_MAX:
+            key = key[:LIST_KEY_MAX]
+        strip_off = len(pool)
+        for codes in entries:
+            pool += _to_tiles(_render_strip(font, codes, cell_w * 8, LIST_CELL_H * 8),
+                              cell_w, LIST_CELL_H)
+        menus.append((name, strip_off, cell_w * LIST_CELL_H, len(entries), cell_w,
+                      key, len(entries[0])))
+
+    pals = _palette(SM_PAL_NORM_RGB) + _palette(SM_PAL_HI_RGB)
+    record = struct.pack(
+        "<IIIIIHBBBBBB", off, SM_CHAR_BASE + SM_BASE_TILE * 32, off + len(pool),
+        PAL_RAM_MAIN_BG + SM_PAL_NORM * 32, SM_SCREEN_BASE,
+        SM_BASE_TILE, len(menus), SM_PAL_NORM, SM_PAL_HI, 0, 0, 0)
+    if len(record) != LIST_RECORD_HEAD:
+        raise LabelError(f"list header is {len(record)} bytes, expected {LIST_RECORD_HEAD}")
+    for _name, strip_off, strip_tiles, n, cell_w, key, key_full in menus:
+        rec = struct.pack("<HHBBBB", strip_off, strip_tiles, n, cell_w,
+                          LIST_CELL_H, min(key_full, LIST_KEY_MAX))
+        rec += struct.pack(f"<{LIST_KEY_MAX}H",
+                           *(list(key) + [0] * (LIST_KEY_MAX - len(key))))
+        if len(rec) != LIST_MENU_RECORD:
+            raise LabelError(f"list menu record is {len(rec)}, expected {LIST_MENU_RECORD}")
+        record += rec
+
+    # Every menu loads at the same base, so only the largest has to fit.
+    worst = LIST_FRAME_TILES + max(n * t for _n2, _o, t, n, _w, _k, _kf in menus)
+    if SM_BASE_TILE + worst > 0x197:
+        raise LabelError(
+            f"the widest list panel ends at tile {SM_BASE_TILE + worst:#x}, "
+            f"past the map-name window at 0x197")
+    return bytes(record), bytes(pool) + pals
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -845,8 +956,11 @@ def build(rom, log=print) -> bytes:
     # `off` now points past the last image, which is where the panel's own data
     # goes, so the record can carry absolute blob offsets like the others.
     sm_record, sm_payload = _startmenu(font, archive, off)
+    list_record, list_payload = _listmenu(font, archive, off + len(sm_payload))
     blob += b"\0" * (SM_RECORD_OFF - len(blob))
     blob += sm_record
+    blob += b"\0" * (LIST_RECORD_OFF - len(blob))
+    blob += list_record
     blob += b"\0" * (BLOB_HEADER - len(blob))
     if len(blob) != BLOB_HEADER:
         raise LabelError(f"header is {len(blob)} bytes, expected {BLOB_HEADER}")
@@ -857,7 +971,8 @@ def build(rom, log=print) -> bytes:
                 _render(font, placed_set, sel, width, invert), cols)
         blob += b"\xFF" * (cols * 32 * GRID_ROWS)   # the wipe: all paper
     blob += sm_payload
-    expect = BLOB_SIZE + len(sm_payload)
+    blob += list_payload
+    expect = BLOB_SIZE + len(sm_payload) + len(list_payload)
     if len(blob) != expect:
         raise LabelError(f"blob is {len(blob)} bytes, expected {expect}")
 

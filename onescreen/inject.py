@@ -41,12 +41,21 @@ MAIN_LOOP_SITE = 0x02000DB0
 MAIN_LOOP_OFF = MAIN_LOOP_SITE - ARM9_RAM
 ORIG_LOOP_FN = 0x0200110C
 
+# sub_02075A7C passes this literal to SysTask_CreateOnMainQueue. Replacing the
+# verified callback pointer lets the resident wrapper run immediately after the
+# native evolution task, when its binary selection and window are authoritative.
+EVOLUTION_TASK_LITERAL = 0x02075D04
+EVOLUTION_TASK_LITERAL_OFF = EVOLUTION_TASK_LITERAL - ARM9_RAM
+EVOLUTION_TASK_ORIG = 0x02075D09
 
-# Order must match OneScreen_Config in src/hook.s.
+
+# Order must match OneScreen_Config in src/hook.s. The two are positional and
+# nothing checks them against each other, so append only, and append to both.
 CONFIG_FIELDS = ("pad_held", "app_callback", "field_callback",
                  "ov12_lo", "ov12_hi", "battle_state", "dex_exec_orig",
                  "pc_exec_orig", "field_sys", "screens_flipped",
-                 "map_exec_orig", "start_menu_task", "oak_exec_orig")
+                 "map_exec_orig", "start_menu_task", "oak_exec_orig",
+                 "battle_exec_orig")
 
 
 def fill_config(payload: bytes, config_addr: int, load_addr: int,
@@ -73,13 +82,34 @@ def fill_app_table(payload: bytes, table_addr: int, load_addr: int,
     if off < 0 or off + 8 * (len(entries) + 1) > len(payload):
         raise ValueError("app_table lies outside the payload")
     buf = bytearray(payload)
+    # The assembled payload contains French defaults for development builds.
+    # Clear every runtime record first so a failed earlier signature cannot
+    # leave a later default address reachable outside the terminated table.
+    for i in range(len(entries) + 1):
+        struct.pack_into("<II", buf, off + i * 8, 0, 0)
     for i, (_name, callback, swap, ok) in enumerate(entries):
         if not ok:
-            struct.pack_into("<II", buf, off + i * 8, 0, 0)
             break
         struct.pack_into("<II", buf, off + i * 8, callback, swap)
-    else:
-        struct.pack_into("<II", buf, off + len(entries) * 8, 0, 0)
+    return bytes(buf)
+
+
+def fill_labels(payload: bytes, blob_addr: int, load_addr: int,
+                blob: bytes) -> bytes:
+    """Write the rasterised command labels into the payload's reserved space.
+
+    The blob is built from the ROM being patched (see onescreen/labels.py), so
+    unlike the rest of the payload it cannot be assembled ahead of time. The hook
+    reserves a fixed `.space` for it and reads its geometry out of the blob's own
+    header, which keeps the two from drifting apart.
+    """
+    off = blob_addr - load_addr
+    if off < 0 or off + len(blob) > len(payload):
+        raise ValueError(
+            f"the label blob ({len(blob)} bytes) does not fit the space "
+            f"reserved at {blob_addr:#010x}; raise LABEL_BLOB_SIZE in src/hook.s")
+    buf = bytearray(payload)
+    buf[off:off + len(blob)] = blob
     return bytes(buf)
 
 
@@ -111,6 +141,16 @@ def patch_main_loop(arm9: bytearray, frame_addr: int) -> None:
             f"main loop hook site {MAIN_LOOP_SITE:#x} does not hold the expected "
             f"`bl {ORIG_LOOP_FN:#x}` (found {actual.hex()}, wanted {expected.hex()})")
     arm9[MAIN_LOOP_OFF:MAIN_LOOP_OFF + 4] = thumb_bl(MAIN_LOOP_SITE, frame_addr)
+
+
+def patch_evolution_task(arm9: bytearray, task_addr: int) -> None:
+    """Wrap the post-evolution main-queue task at its checked pointer literal."""
+    actual = struct.unpack_from("<I", arm9, EVOLUTION_TASK_LITERAL_OFF)[0]
+    if actual != EVOLUTION_TASK_ORIG:
+        raise ValueError(
+            f"evolution task literal {EVOLUTION_TASK_LITERAL:#x} does not hold "
+            f"the expected {EVOLUTION_TASK_ORIG:#x} (found {actual:#x})")
+    struct.pack_into("<I", arm9, EVOLUTION_TASK_LITERAL_OFF, task_addr | 1)
 
 
 def add_autoload_block(arm9: bytearray, payload: bytes,

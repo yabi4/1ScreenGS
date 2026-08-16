@@ -373,6 +373,13 @@ including the move list, flipping to `0x06` the instant a command is confirmed. 
 reads `0x07` outside battle, which is harmless because everything is gated on the app
 living in overlay 12.
 
+> **Out of date — read the later section.** This conclusion was reversed. `0x02111930`
+> conflates "command confirmed" with "a sub-screen is open" (both `0x06`), which broke the
+> bag and party. What ships is `0x021D0E28`, rejected above for being too fine-grained and
+> then re-adopted with a *negative* test (`!= 0x07`) rather than a positive one, which is
+> what makes the extra values harmless. See *The battle phase word* below for the account
+> that matches the code.
+
 Also worth recording: **do not try to guess which A press confirms the command.** An
 attempt to fire on "the second A" swapped away from the move list, because the number of
 presses varies with whether the cursor was moved first, backed out with B, or SAC/POKéMON
@@ -389,13 +396,18 @@ comes up only when you reach for it.
 | phase 2 (turn executing) | battle scene, forced |
 | phase 1 entered | unchanged — deliberately no swap |
 | D-pad or A newly pressed | command menu |
-| `IDLE_FRAMES` (120 ≈ 2 s) with no input, uncommitted | battle scene |
+| `IDLE_FRAMES` (60 ≈ 1 s) with no input, uncommitted | battle scene |
 | A pressed | committed: timeout disabled, menu stays |
 
 A is a trigger as well as the D-pad because the cursor starts on ATTAQUE — pressing A
 without moving first would open the move list unseen on the bottom screen.
 
 All five behaviours verified in-game on a live trainer battle.
+
+> **Superseded.** This whole state machine was removed on `beta-ui`. The commands are
+> drawn onto the battle scene now, so there is nothing to raise and nothing to time out —
+> see *Drawing the battle command menu* below. Kept because the reasoning about *when* the
+> screen should move is still the reasoning that applies.
 
 The lesson worth keeping: **three savestates from one battle is not evidence.** 68,535
 bytes passed that test and the one that looked cleanest was still a coincidence.
@@ -997,3 +1009,632 @@ Everything else defaults to FLIP. See `SITE_INTENT` in `onescreen/table.py`.
 - Screenshots via `PrintWindow` with `PW_RENDERFULLCONTENT` work without stealing focus.
   Note the ALT tap used to unlock `SetForegroundWindow` opens melonDS's Qt menu bar —
   send `ESC` afterwards or keystrokes hit the menu instead of the game.
+
+## Drawing the battle command menu
+
+The first thing this project draws rather than reroutes. Everything it needs was found
+statically or measured live; none of it is guessed.
+
+**Where it draws.** The battle message box is already on the main engine, which is what
+makes this cheap — `battleSystem->window[0]`, `GF_BG_LYR_MAIN_1`, tile rect x=2 y=19,
+27×4 tiles, palette 11, baseTile 31. Confirmed three ways: the decomp
+(`asm/overlay_12_022378C0.s:375`), the same `AddWindowParameterized` immediate sequence
+found at three sites in the retail ov12 of all three ROMs, and a live dump mid-battle —
+`BG1CNT` charBase 1, engine-A `DISPCNT` character-base offset 0, so the tiles start at
+`0x06004000 + baseTile*32`. The right-hand columns hold only the "look at the bottom
+screen" icon, which the blit covers.
+
+Palette 11 reads fg 1, shadow 2, paper 15, with a usable salmon accent at 12 — which
+pret's `sFontInfos` (`src/font.c:28`) states independently as `fgColor 1, bgColor 15,
+shadowColor 2`.
+
+**What it draws.** `onescreen/labels.py` pulls the strings out of the ROM being patched
+(`msg_0197` entries 924–927, plus 940/941 for yes/no) and rasterises them with the game's
+own font (`a/0/1/6` file 1, fontId 1). Both are language-neutral, so the build speaks
+whatever the dump speaks. Two gotchas worth keeping: ndspy returns the five font files as
+empty and the archive's own FAT has to be read instead; and the glyph format is 2bpp,
+16×16, most significant pair leftmost, high byte of each u16 first.
+
+**How it knows what is happening.** The battle is an `OverlayManager` app whose
+init/exec/exit are ARM9 wrappers rather than overlay code, so `find_overlay_template`
+needed an `arm9_resident` shape — exactly one match per ROM (FR `0x020FA468`, US
+`0x020FA484`). Its exec hands over the live `BattleSystem` every frame.
+
+| what | where | how it was pinned |
+|---|---|---|
+| `battleInput` | `BattleSystem + 0x19C` | a scan for a word pointing back at `BattleSystem` found `0x19C` at runtime |
+| `curMenuId` | `BattleInput + 0x68B` | literal census (below) |
+| `menuCursor` | `BattleInput + 0x6D4` | same +0x20 shift; learned from the D-pad at runtime as a check |
+
+**The literal census.** pret warns at `battle_input.h:168` that its offsets in this struct
+drift, and they do — by `0x20`. Offsets that large cannot be a Thumb immediate, so every
+access loads them from a literal pool, which makes the pool a census of the struct.
+Scanning ov12's word-aligned literals in `[0x500,0x800)` shows
+
+    0x68a x9   0x68b x6   0x68c x5   0x68d x1   0x68e x3   0x68f x2
+
+six consecutive single-byte offsets — pret's run of six `u8` fields. What confirms the
+alignment rather than merely fitting it is the *gap*: `0x688` and `0x689` are absent
+entirely, and those are the two fields pret calls `unused_668`/`unused_669`. Unreferenced
+fields leave no literals. The same +0x20 lands the cursor on `0x6d4`, corroborated by
+`keyPressed` (`0x6d8`), `tutorial.finger` (`0x6dc`) and the three closing sprite pointers
+(`0x6e4/0x6e8/0x6ec`).
+
+**Menu ids 1..8 are all the root menu**, not just the two the enum names —
+`sBattleMenuTemplates` gives every one of them `BattleInput_CursorMove_MainMenu`, and 3
+and 4 are the "put the menu back up" states you land on after backing out of a submenu.
+Testing only 1 and 2 left the screens swapped with no labels after a trip into the bag.
+
+**Two things the menu id cannot see**, both found by playing:
+
+- The bag and party run as **overlay 8** and leave `curMenuId` on the root menu, so they
+  drew on the bottom screen until the overlay id was checked first.
+- Confirming a choice resets the game's cursor *before* the menu id changes, so the
+  highlight flashed back to FIGHT on the way out. Fixed by freezing the image at the
+  moment A is pressed and holding it across a submenu trip — which is also simply correct,
+  since the game restores the cursor to that same choice.
+
+## Resolved dead end: a yes/no box for the field prompts
+
+The first attempt on `beta-ui` was **abandoned**. The goal was the battle treatment for
+the overworld's binary questions, beginning with the nurse's "heal your Pokémon?" offer.
+Its negative results remain below because they ruled out several convincing but wrong
+paths. The conclusion did not: the prompt has a shared controller, one level deeper than
+the `ov01` list-menu code that was searched first. The superficially similar question
+after an evolution is a different ARM9 controller, documented in the next section.
+
+### Resolution: mode 3 is a custom overlay-27 controller
+
+The nurse script is already readable in pret. `scr_seq_0003_002` prints a `msg_0040`
+message ending in `{YESNO 0}`, calls `TouchscreenMenuHide`, then reads
+`GetMenuChoice VAR_SPECIAL_RESULT`. `{YESNO}` itself is only the three-tile "look at the
+lower screen" indicator; it does not create the choice. `ScrCmd_GetMenuChoice` calls
+`ov01_021F6ABC(fieldSystem, 3, 3, &ctx->data[1])`, which asks bottom-screen mode 3 to enter
+state 3. `TouchscreenMenuHide` records that requested mode at `FieldSystem+0x1C`, and
+`TouchscreenMenuShow` eventually returns it to 0.
+
+Mode 3 is entry 3 in overlay 27's bottom-UI table. It is not `ListMenu2D` and not
+`yes_no_prompt.c`; it is a custom state machine reached through two `SysTask` objects:
+
+    FieldSystem + 0xD8       outer SysTask *
+      SysTask + 0x10         outer environment
+        +0x04                child SysTask *
+        +0x08                FieldSystem * back-reference
+          SysTask + 0x10     child controller
+            +0x00            state
+            +0x24            FieldSystem * back-reference
+            +0x394           binary selection (0 yes, 1 no)
+
+`SysTask.data` being at `+0x10` is confirmed by `include/sys_task.h` and `src/sys_task.c`.
+The controller's assembly divides cleanly into the two kinds of UI that earlier work had
+conflated:
+
+| state | behaviour | top-screen treatment |
+|---|---|---|
+| 0–2 | setup, idle and transition | keep the world |
+| 3 | initialise binary prompt, selection 0 | draw Yes selected |
+| 4 | handle binary input | draw the live selection |
+| 5 | confirm and return the result | hold the live selection |
+| 6 | tear down the binary prompt | wipe once; keep the world |
+| 7–10 | initialise, run and close a longer list | show the lower UI |
+| 11 | communication-club cleanup/abort | show the native lower UI |
+
+The native handler maps Up to 0, Down to 1, A to the current choice, and B to 1 followed
+by confirmation. The patch therefore never interprets input or writes the script result;
+it only mirrors the controller's selection into the rightmost three tiles of the existing
+27×4 field dialogue. Setup and teardown remain on the world so there is no one-frame
+screen flash, while the genuine list and external-cleanup states continue to use native
+routing.
+
+This chain is safe to follow only while the field app is running. Every pointer must be
+word-aligned and wholly inside main RAM, both `FieldSystem` back-references must match,
+the state must be 0–11, and a drawn selection must be 0 or 1. Any failed check means draw
+nothing and use the existing screen swap. That directly addresses both regressions from
+the first attempt: painting another app's VRAM and following a stale pointer into I/O.
+
+The useful sources are pret's `files/fielddata/script/scr_seq/scr_seq_0003.s`,
+`src/scrcmd_c.c`, `asm/overlay_01_021F6830.s`, `asm/overlay_27.s` and
+`include/sys_task.h`. The LLM-assisted
+[pokeheartgold-slop](https://github.com/antonsynd/pokeheartgold-slop) fork can help turn a
+narrow overlay-27 function into C if live behaviour ever disagrees with this reading, but
+it is a last-resort aid, not the authority: the matching retail assembly and savestate
+values must still win. The nurse speech itself needs no further decompilation.
+
+### What the first investigation ruled out
+
+**The value was lower than it looked.** When a script menu owns the bottom screen the
+patch already swaps it up, and the buttons read perfectly well there. The only gain would
+have been keeping the world visible. Worth remembering before anyone tries again.
+
+**The original conclusion was that there was no shared binary-choice system.**
+`ScrCmd_YesNo` builds a `ListMenu2D` on `GF_BG_LYR_MAIN_3` — already the main engine, so
+those prompts need no work at all. Oak's speech has its own (`OakSpeechYesNo_*`). Those
+facts are true, but the conclusion was too broad: the nurse's green two-button panel is
+the shared custom controller in overlay 27 described above.
+
+What was disproved, in order:
+
+1. **`menu + 0x9B` is the item count.** It is — `MoveTutorMenu_SetListItem_Internal` ends
+   by incrementing it — but it reads 0 at a nurse prompt.
+2. **`menu + 0xB8` is its `ListMenu2D`.** `ov01_021EDE8C` does call
+   `Handle2dMenuInput(menu->[0xB8])` every frame, so the offset is right, but the pointer
+   reached from `ov01_021F6B20`'s chain is not that menu: its first word should be the
+   `FieldSystem` (`ov01_021EDAFC` opens with `str r4, [r6]`) and reads `0x00400000`.
+3. **The nurse uses that menu at all.** A whole-RAM scan of a savestate at the prompt
+   found **no** genuine `ListMenu2D` anywhere, and `ov01_021EDAFC` always builds one.
+4. **A byte found by savestate diff is the selection.** Diffing two states that differed
+   only in which button was highlighted gave exactly one isolated `0↔1` byte in 4 MB. It
+   turned out to sit at a fixed offset inside a **96 KB heap block** (`0x18000` in its
+   header), i.e. a heap offset, not a struct field — stable only while allocation order
+   happens to repeat. A hardware watchpoint on it never fired while the cursor moved,
+   which settled it.
+5. **"A script menu that is not a list menu" identifies a binary prompt.** This one
+   shipped briefly and is the reason to be careful: it fires on any scripted
+   bottom-screen moment that is not a list, including simply switching on the PC.
+
+**What did work**, and was worth reusing: the shop's menu *is* a real `ov01` list menu —
+first word is the `FieldSystem`, item count 3 at `+0x9B` for Buy/Sell/Quit. So shops and
+multi-choice questions can be recognised reliably. The binary touch prompts simply could
+not be recognised through those `ov01` list-menu paths.
+
+**Two regressions this caused**, both from drawing before the ground was measured:
+
+- `OneScreen_ScriptMenu` runs every frame *whatever app is on screen*. Harmless while it
+  only touched `POWCNT1`; the moment it drew, it painted over VRAM the PC box and shops
+  had taken for their own graphics. Gate any drawing on the overworld actually running.
+- Walking a pointer chain with only null checks froze the game in a shop. A stale pointer
+  is not null, it is arbitrary, and `ldr` through arbitrary reaches I/O space — reading
+  the IPC FIFO at `0x04100000` pops it and hangs the ARM9. Range-check every link.
+
+**Method note.** Savestates were far more productive than driving the emulator: no
+one-connection-per-launch limit, no navigation timing, and the same query can be re-run
+offline. Three offline queries against a pair of savestates produced more than six live
+runs did. `tools/savestate.py` is the tool; melonDS writes slots as `<rom>.ml1`, `.ml2`.
+
+## Post-evolution move-learning prompts
+
+The "forget a move?" screen looks like another green binary field prompt, but it is not
+owned by overlay 27. A French SoulSilver savestate taken on the first option gave a much
+cleaner root: `gSystem.vBlankIntr` was the Thumb callback at `0x02077271`, and its argument
+at `gSystem+4` was a `0xBC`-byte evolution task-data block at `0x022C0564`. This is the
+callback installed by `sub_02075A7C`; the corresponding two-option state machine is ARM9
+code.
+
+The controller fields in that block are:
+
+    +0x64  evolution state
+    +0x8A  prompt substate (0 input, 1 confirmation animation)
+    +0x8B  selection (1 Yes / forget, 2 No / keep)
+
+The captured fixture resolves to state 21, substate 0 and selection 1, matching the red
+"forget" choice in the screenshot. There are two copies of the same prompt flow:
+
+| state | role | mirrored choice |
+|---|---|---|
+| 20 | set up "forget a move?" | Yes |
+| 21 | input/confirmation for that question | live `+0x8B` |
+| 34 | set up "stop trying to teach it?" | Yes |
+| 35 | input/confirmation for that question | live `+0x8B` |
+
+The native handler remains authoritative. Up and Down change `+0x8B`, A confirms it, and
+B selects 2 and confirms No. The patch neither reads the keypad for this feature nor
+writes the result; it only turns the native 1/2 into the existing localized Yes/No image.
+
+**The window can be verified rather than assumed.** The task data points to its `BgConfig`
+at `+0x00` and to a live `Window` at `+0x04`. That window points back to the same
+`BgConfig`, has packed geometry `0x1B130201` (MAIN_1, x=2, y=19, width=27) and
+`0x001F0B04` (height=4, palette=11, base tile=31), and has a live pixel buffer at `+0x0C`.
+It is therefore exactly the same four-row tile rectangle as battle window 0. The prompt
+can alias both the battle Yes/No geometry and its localized image data, with no new image
+bytes.
+
+The runtime resolver requires the structurally resolved evolution callback to be active,
+range-checks the complete task-data block and every pointer, checks the window's `BgConfig`
+ownership and packed geometry words, and requires the state to remain in the known 0–45
+range. Only the four states above are treated as prompts, and their live choices must be
+1 or 2. A valid non-prompt evolution state wipes a previously drawn label once. Invalid
+or stale data resets the latch without touching VRAM, which matters when the VBlank owner
+changes to the next application.
+
+This is also why a script-level `GetMenuChoice` rewrite would not have helped this screen:
+the post-evolution move flow never uses that script command or overlay-27 controller.
+
+## Drawing Oak's prompts
+
+The second thing this patch draws, and much cheaper than the first, for one reason:
+`src/oaks_speech.c` is decompiled. Everything the battle menu had to be reverse-engineered
+for was simply readable here.
+
+**The state machine is named.** `OakSpeechData.state` is at `+0x0C` — which the hook was
+already reading, so the struct base was confirmed before any of this started — and the
+enum in `src/oaks_speech.c` names every value. Only the three states that actually take
+input are drawn on; the setup and fade states around them would otherwise flash a prompt
+the player cannot answer yet:
+
+| state | |
+|---|---|
+| 65 | `GENDER_SELECT_MENU_HANDLE_INPUT` |
+| 69 | `CONFIRM_GENDER_YESNO_HANDLE_INPUT` |
+| 98 | `CONFIRM_NAME_YESNO_HANDLE_INPUT` |
+
+**The count and the selection are one struct away.** `OakSpeechMultichoice` is inline at
+`+0x160`, anchored by `filler_148[0x18]` immediately before it and by `unk_080` and
+`unk_114` earlier, all three named after their own offsets:
+
+    +0x161 numOptions    +0x163 cursorPos
+
+That pairing — "how many options" and "which one is lit", reachable from a pointer the
+framework hands over every frame — is exactly what the first field-prompt investigation
+had not yet located, and is the whole reason this took an afternoon and that took days.
+
+**The two questions read differently, and the layout has to match.**
+`OakSpeech_GenderSelectHandleInput` moves on `PAD_KEY_LEFT` and `PAD_KEY_RIGHT`; the
+confirmations go through the generic multichoice handler on `PAD_KEY_UP` and
+`PAD_KEY_DOWN`. So the gender options are drawn side by side and the confirmations
+stacked. Stacking both would have implied the wrong keys.
+
+**Same tile rectangle for the third time.** `sWindowTemplate_DialogMsg` is x=2, y=19, 27x4
+— identical to the battle message window and the field dialog box. Only the layer beneath
+differs:
+
+|  | battle window[0] | field dialog box | Oak dialogWindow |
+|---|---|---|---|
+| layer | `MAIN_1` | `MAIN_3` | `MAIN_0` |
+| char base | `0x06004000` | `0x06008000` | `0x06018000` |
+| base tile | 31 | `0x237` | `0x36D` |
+| palette | 11 | 12 | 6 |
+
+Oak's native dialog uses palette 6 indices 1, 2 and 15 for ink, shadow and paper; index 12
+is free for the custom selected band. Rather than hardcode an approximation, each active
+prompt copies Oak's own backdrop accent from main BG palette 1/index 1 (`0x05000022`) to
+dialog palette 6/index 12 (`0x050000D8`). The observed values are `0x71AA` in SoulSilver
+(blue/silver) and `0x1A18` in HeartGold (gold). Both colours already belong to the retail
+intro, and normal dialog text keeps its native palette entries.
+
+**The words are the game's own.** `msg_0286` entries 7 and 16, whose row ids in the decomp
+are literally `msg_0286_boy` and `msg_0286_girl`, and `msg_0219` entries 47 and 48 for
+Oak's yes and no. A first attempt used the charmap's ♂ and ♀ (`01BB` / `01BC`) after a
+search for standalone "Boy"/"Girl" came up empty — the search was simply too narrow.
+
+**What the swap used to hide.** The old rule swapped for the whole gender range 62..93.
+Drawing the prompts while that was still in place flipped the screen back and forth through
+every fade and setup state between them. The gender flow now never swaps; only the tutorial
+menu does, because three options of running text do not fit beside the question.
+
+Two bugs worth remembering, both from the boxes being different widths:
+
+- Taking a prompt down must wipe **the box that is actually up**. The gender box is ten
+  tiles and the yes/no one three, so wiping the wrong one leaves labels on screen.
+- Going from the gender prompt to the confirmation must clear the **wider** box, or the
+  same leftovers appear.
+
+### Resolved: the flickering "look at the bottom screen" indicator
+
+A small DS/focus indicator used to flicker for a frame or two before Oak's custom prompts
+appeared. The failed investigations are retained below because each ruled out a plausible
+fix and narrowed the eventual answer.
+
+It was **not** a regression in the custom label drawing. Oak's question messages 37, 38,
+39, 41 and 42 end in `{YESNO 0}`. That text control is the old instruction to look at the
+lower screen; the previous full-screen swap merely hid it.
+
+What was ruled out, by measurement rather than argument:
+
+1. **It is tiles in the dialog box, so blitting over it will do.** At that stage the hook
+   held the box's own all-paper image over that corner on every non-prompt frame —
+   confirmed live, `oak_drawn` read `0x22` — and the indicator still flickered.
+2. **It is `data->sprites[3]`, the touch-to-advance object.** The decomp says that object
+   lives in the corner and is shown and hidden around these states, so the hook cleared its
+   `drawFlag` (`+0x34`, `sprites[3]` at `+0xE4`). A savestate showed **`oak_flag = 0`** —
+   the flag was already zero before the write, so that object was never being drawn. The
+   write was removed; it bought nothing, and it was the only place the hook wrote game
+   state beyond `gSystem.screensFlipped`.
+3. **The prompt states were too narrow.** Widened to cover the lead-in states, then to
+   every state of the speech. No change.
+
+The missing piece was the text-printer order. `{YESNO 0}` is encoded in the live `String`
+as the four halfwords `[0xFFFE, 0x0200, 0x0001, 0x0000]`. `RunTextPrinter` processes the
+`0x0200` command in a task after `OneScreen_OakExec`, calls
+`RenderScreenFocusIndicatorTile`, then copies the whole window. A later redraw was
+therefore guaranteed to beat the earlier wipe on frames where the control ran.
+
+The fix removes the cause instead of racing that queue. In Oak's three message-printing
+lead-ins (states 61, 67 and 97), while `printDialogMsgState` at `+0x104` is 1, the hook
+validates the live `String *` at `+0x110`: aligned and wholly in main RAM, maximum size
+`0x400`, current size below that maximum, and magic `0xB6F8D2EC`. It scans only the stated
+length for the exact four-halfword sequence above and changes command id `0x0200` to the
+unused `0x0209`. The generic parser skips that control safely, so no focus tile reaches
+the pixel buffer. Requiring Oak's own VBlank argument to match its data block keeps the
+write out of the nested naming application; restricting both state and exact sequence
+leaves the tutorial and every other text control alone.
+
+**Validation caveat.** The existing `beta-ui` savestate set has no frame from Oak's intro.
+The cause and fix are supported by the decompiled message/state flow, exact assembly and
+the main-loop task order, but the final absence of the flash still needs a fresh-start
+melonDS play-through on both editions.
+
+## The overworld menu, drawn on the world
+
+The X menu was the first thing drawn with **no window to borrow**. Battles, the field and
+Oak all wrote into a message window the game had already created, so the tiles were
+allocated, mapped and palettised and drawing was a memcpy into them. The overworld has no
+such window — the world fills the screen — so this one writes a **tilemap** as well as tile
+pixels, which nothing else in the patch does.
+
+### Where it can be drawn, and why nothing had to be reconfigured
+
+During field play the world is **3D on BG0 at priority 1**, not a tilemap at all. That
+priority is the number the whole feature hangs on, and it is set deliberately: `FieldMap_Init`
+installs `initializeSimple3DVramManager` (`src/gf_3d_render.c:46`), which sets BG0 to 1 —
+where `GF_3DVramMan_DefaultInitializer` would have set 0.
+
+The three 2D layers come from `src/field/fieldmap.c:464-507`:
+
+| | MAIN_1 | MAIN_2 | MAIN_3 |
+|---|---|---|---|
+| charBase | `0x10000` | `0x14000` | `0x08000` |
+| screenBase | `0x0000` | `0x0800` | `0x1000` |
+| priority | 3 | 3 | **0** |
+
+So **only MAIN_3 is in front of the world**, and all three planes are enabled and merely
+transparent while you walk. Drawing there needs no register touched: no priority shuffle,
+no bank change, no `BgConfig` call. MAIN_1 is emptier — the Poké Mart is its only field
+consumer — but putting it in front would have meant a priority shuffle *and* would have
+covered the dialog box, since ties break toward the lower BG number.
+
+### Tile placement, and the game's own habit of double-booking
+
+`Task_StartMenu` loads its own graphic to **tile 0** of MAIN_3 (`src/start_menu.c:468`).
+That file — `a/0/1/4` #12 — is LZ77 with an uncompressed size of `0x1040`, so **130 tiles**.
+The only permanently allocated window on the layer is the map-name card at `0x197`
+(`src/field/draw_map_name.c:32`), which lives for the whole field session.
+
+Everything between is scratch belonging to script list menus (`0x3D`, `0xDD`), the mart,
+and the comm club — none of which can be open while the start menu is. Parking the panel at
+`0x90` is therefore safe, and it is exactly what the game does to itself: script yes/no
+sits at baseTile `0x21F` (`src/scrcmd_c.c:131`), *inside* the map-name window's range,
+because the two never coexist.
+
+The strips are re-uploaded on **every open** rather than once. A script list menu's own
+tiles run `0x3D..0xDD` and eat into ours while the menu is shut, and the bag and party reuse
+the layer wholesale. 5 KB once per press of X removes the entire class of bug.
+
+### The three fields that drive it — all read from a live savestate
+
+Read out of `out/beta-ui.ml1`, taken with the menu open and POKéDEX lit, rather than
+trusted from the decomp alone:
+
+| field | value read | what it means |
+|---|---|---|
+| `FieldSystem +0xD3` | `0` | the cursor — POKéDEX, matching the screen |
+| `FieldSystem +0xD2` | `2` | the touch overlay's mode: menu open |
+| `StartMenuTaskData +0x26` | `3` | `HANDLE_INPUT` |
+| `StartMenuTaskData +0x2C` | **`10`** | `numActiveButtons`, for a **seven**-entry menu |
+| `StartMenuTaskData +0x3A` | `[0,1,2,11,3,4,5,9,10,0]` | `selectionToAction[]` |
+| `StartMenuTaskData +0x34C` | — | `inhibitIconFlags`, which is what it ended up using |
+
+Four things in that table are worth keeping.
+
+**The cursor is not in the task struct.** It lives in `FieldSystem`, because the *touch
+overlay* owns it — `ov27_0225B404` writes it on every D-pad move and `start_menu.c` only
+reads it. Looking for it in `StartMenuTaskData` finds `selectedIndex` at `+0x28`, which is
+a latched copy taken at the moment you press A, not the moving cursor.
+
+**`numActiveButtons` overcounts.** `StartMenu_BuildActionLists` unconditionally appends the
+two registered-item buttons (`src/start_menu.c:520-521`), which the D-pad cannot reach —
+`ov27_0225D0B4` navigates seven slots.
+
+**`selectionToAction[]` is a trap, and the first build fell in it.** Decoded against the
+enum at `src/start_menu.c:49` the savestate's copy is POKEDEX, POKEMON, BAG,
+**POKEGEAR (11)**, TRAINER_CARD, SAVE, OPTIONS, then the two extras — exactly the order on
+screen, which is precisely what makes it look like the right source. It is not, for two
+reasons that only a save with an incomplete menu reveals:
+
+1. **It is compacted, and the menu is not.** The grid slots are fixed: an entry you have
+   not earned leaves its slot **empty**. Early in the game the real menu shows SAC alone in
+   the left column *at row 2*, with the trainer card, SAUVER and OPTIONS down the right —
+   because POKéDEX, POKéMON and POKéMATOS are missing from their own slots, not absent from
+   a list. Packing the compacted list into consecutive cells puts every entry in the wrong
+   place and desynchronises the cursor, which indexes the compacted order.
+2. **Past the real entries it holds zeros**, and zero *is* `START_MENU_ACTION_POKEDEX`. A
+   four-entry menu drew POKéDEX twice in the right-hand column, from padding.
+
+The right source is **`inhibitIconFlags` at `+0x34C`** — the game's own answer, computed
+once when the menu opens (`FieldSystem_GetStartMenuButtonInhibitFlags_Normal`,
+`src/start_menu.c:288`). Walk the fixed cells, skip any whose bit is set, and the panel
+matches the touch screen exactly. The cursor is then each drawn cell's position *among the
+enabled ones*, which is what `+0xD3` counts.
+
+Watch the enums: they are different. `START_MENU_ACTION_POKEGEAR` is **11**, but
+`START_MENU_ACTION_DISABLE_POKEGEAR` is **9**.
+
+**The special zones cannot be reproduced, and are detected rather than drawn wrong.**
+Safari, the Bug Contest and Pal Park use different grids (`ov27_0225CFC8` rows 1-3) that
+put RETIRE in slot 0 and shift everything after it, and the active variant lives in
+overlay 27's own struct, out of reach. But all of them leave RETIRE **enabled**, while the
+normal layout always inhibits it (`src/start_menu.c:307`) — so bit 8 separates them. In
+those zones `OneScreen_StartMenu` returns 0 and the caller swaps the screen, exactly as the
+patch did before any of this.
+
+### Why it is a grid and not a list
+
+`ov27_0225D0B4` (`asm/overlay_27.s:6073`) is a `[7][4][3]` table:
+per slot, per direction, three candidate destinations, and the navigator takes the first
+whose slot is enabled — which is how it skips locked entries. Decoded, slots 0-3 are the
+left column and 4-6 the right; **up/down wrap inside a column, left/right jump between
+them**.
+
+Drawn as a single list that reads as a bug: DOWN cycles through the first four entries and
+never reaches the rest. The panel is 2x4 because the input is.
+
+### Highlighting without a second set of pixels
+
+The small boxes each ship one finished image per highlighted entry. That does not scale
+here: eight cells x two states, at 8x2 tiles a cell, is **~32 KB against 11 KB of free
+ITCM**. So the panel ships **one strip per label** and highlights by writing a different
+**palette number into the selected cell's tilemap entries** — a few halfwords a frame.
+
+That is also how the game does it. `ov27_0225B398` reloads a 32-byte OBJ palette for the
+selected icon rather than moving a cursor sprite.
+
+Storing one strip per *label* rather than one image per *cell* is what allows the runtime
+`selectionToAction[]` lookup: the tilemap points any cell at any strip, so the assignment
+is free.
+
+### The trainer-card row cannot show your name
+
+`msg_0196` entry 3 is the trainer card, and it decodes to a bare `{STRVAR_1 3, 0, 0}` — the
+game calls `BufferPlayersName` and expands it at runtime (`asm/overlay_27.s:3455`). Patch-time
+rasterisation has no save file to read, so that row uses `msg_0282` entry 5 instead:
+**DRESSEUR** in French, **TRAINER** in English. Still the ROM's own words, still
+language-neutral.
+
+The other eight come from `msg_0196` via `ov27_0225CF94`: 0 POKéDEX, 1 POKéMON, 2 BAG,
+4 SAVE, 5 OPTIONS, 6 EXIT (the enum calls it `RUNNING_SHOES`), 8 RETIRE, 14 POKéGEAR.
+
+
+## The script list menus (the shop's, the PC's)
+
+The shop's `ACHETER / VENDRE / QUITTER` and all three PC lists are **the same
+object**. A script builds a menu (`ScrCmd_064` then `ScrCmd_066` per entry),
+overlay 27's touch controller renders it, and the controller keeps a pointer
+straight back to it. One renderer covers all of them, and the PC box menu too,
+despite looking like a different system entirely.
+
+### The chain, all read from savestates rather than inferred
+
+```
+FieldSystem -> +0xD8 outer SysTask -> +0x10 outer data
+            -> +0x04 child SysTask -> +0x10 controller
+     controller +0x394  cursor
+     controller +0x3A0  the menu
+         menu +0x9B  entry count
+         menu +0x1C  String* per entry, stride 4
+     String: +0x00 maxsize, +0x02 size, +0x04 magic, +0x08 u16 codes
+```
+
+**`+0x394` was already in this file under another name.** It was recorded as
+`FIELD_CHILD_CHOICE_OFF`, the binary-prompt choice. It is the list cursor as
+well - proved by two savestates of one shop menu reading 0 then 1 as the cursor
+moved ACHETER -> VENDRE. The field that made this feature possible had been
+sitting in the hook since the field-prompt work.
+
+**`+0x39C` is not the menu.** It holds an ARM9 code address. Reading the entry
+count through it gives 255, no menu matches, and the panel silently never
+appears while everything still works - because unrecognised menus fall back to
+swapping. Cost an entire build to notice; the fix was four bytes.
+
+### Menus cannot be identified by message id
+
+`ov01_021EDD68` reads each entry's id into a string, expands placeholders into a
+pre-allocated `String`, stores that and the entry's return value, and **throws
+the id away**. Since this same code draws every NPC choice in the game, and
+drawing the wrong words would be worse than swapping, a menu is recognised by
+its **entry count plus the characters of its first entry**, compared against text
+rasterised at patch time. The numbers are the game's own character set and match
+exactly: ACHETER is `[299,301,306,303,318,303,316]` in the ROM and in RAM.
+
+Every menu worth drawing has a first entry free of placeholders, which matters -
+the player's own PC row expands to their name and could never be matched.
+
+### What the default archive gives away
+
+When a script passes no msgdata (`ScrCmd_064`), `ov01_021EDAFC` loads
+**`msg_0191`** itself. That is where every one of these menus' words lives:
+321/322/323 for the shop, 62/63/64/75 for the PC list, 73/74/65/66 for the PC's
+item menu, 67-72 for the box menu.
+
+### Why only the shop is drawn
+
+Storage, not difficulty. The four label sets need **15.3 KB** together; after the
+shop there are about 3.6 KB left between free ITCM and the blob reservation. The
+PC box alone needs 8.3 KB and 269 VRAM tiles against the 263 free below the
+map-name window, because its entries are two lines tall. The remaining menus need
+the tile pool compressed - it is almost all paper and would RLE well - rather
+than any new reverse engineering. Everything they need is in this section.
+
+
+## Who owns the VRAM you just drew into
+
+Four separate bugs in this project have been the same mistake: **assuming what we
+drew is still there.** Tiles, palette and tilemap are each reclaimed
+independently, by different things, at different times. Worth reading before
+drawing anywhere new.
+
+**The tilemap is not yours - the game keeps a shadow copy.** Every layer has a
+buffer in main RAM which the game commits wholesale whenever its contents change;
+reprinting a menu option's description does exactly that. Cells written straight
+to VRAM are not in that copy, so the commit erases them and the panel reappears a
+frame later. This is what made the PC menus flash on every cursor move.
+
+Proved rather than guessed: with the box menu open, `bgs[3].tilemapBuffer` held
+**zeros across the whole panel rectangle**. The fix is to write the panel into
+that buffer as well as VRAM, so the next commit repaints it instead.
+
+```
+FieldSystem +0x08 -> BgConfig
+    +0x08 Background bgs[8], 44 bytes each
+        +0x00 tilemapBuffer, +0x04 bufferSize (0x800 for a 32x24 map)
+    so MAIN_3's buffer pointer is at BgConfig + 0x8C
+```
+
+**The tiles and the palette are not yours either.** Any application that runs in
+between - the photo album, the mailbox, the bag - may take the same tiles and
+palette slots. A cached "already uploaded" flag then leaves the tilemap pointing
+at whatever that application left, which draws as a **solid black box** rather
+than as anything obviously wrong.
+
+Two guards, because one is not enough: forget the upload when the running
+application is not the field, *and* forget it whenever no panel was up recently.
+The second catches whatever is a field task rather than an application, which is
+not always obvious from the outside.
+
+**A cached upload flag must record WHICH thing is loaded, not merely that
+something is.** A single boolean meant stepping from the PC's list into its box
+menu kept the previous menu's strips and drew the new tilemap over them.
+
+**Clear on change, not only on close.** Panels are not all the same size, so a
+smaller one drawn where a larger one was leaves the old edges on screen.
+
+## Other menus that could be drawn next
+
+`msg_0191` is the archive the script list menus default to, so scanning it for
+short strings enumerates the candidates. Everything below already works with the
+renderer in place - each needs a label set and its first entry as an identifying
+key, nothing more.
+
+Worth doing, common in ordinary play:
+
+| menu | msg_0191 entries |
+|---|---|
+| Day-care | 133 DEPOSER POKeMON, 134 CHERCHER POKeMON, 132 RETOUR |
+| Move Deleter / Tutor / Name Rater | short confirm lists |
+| Union Room | 168 SALUER, 169 DISCUTER, 170 TCHAT |
+
+Occasional or optional content:
+
+| menu | msg_0191 entries |
+|---|---|
+| Battle Tower / Frontier | 6-10 COMBAT SOLO / DUO / MIXTE / MULTI / 50 |
+| Pokeathlon | 271-279 |
+| Shard trading | 205-208 TESSON ROUGE / BLEU / JAUNE / VERT |
+| Bug Contest | 199 INSCRIRE, 200 INFORMATIONS, 201 QUITTER |
+| Safari Zone | 194 REGLES DE BASE, 195 SHOW CAPTURE, 196 STOCKAGE |
+| Fossil selection | 159-165, seven fossil names |
+
+Two caveats. Several of these live in the special zones - Safari, the Bug
+Contest, the Pokeathlon - where the X menu already falls back to swapping because
+their grids cannot be reproduced, so each needs checking on its own. And every
+`OUI / NON` prompt (42/43, 46/47) goes through the field yes/no path instead, not
+this renderer.
+
+The honest read: after the four already done, the day-care and the move deleter
+are the only ones a normal playthrough meets often enough to earn their label
+budget. The rest are one-offs where swapping costs nothing.
+
+## Still outstanding
+
+The **X menu writes its tilemap to VRAM only**, so it has the shadow-copy bug
+described above. Nothing has been seen to erase it - while it is open the game
+pauses map objects and no message box is printed - but the defect is real and the
+fix is the one already applied to the list menus.

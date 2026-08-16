@@ -202,9 +202,13 @@ def cmd_intersect(args):
 # Payload variables, in the order they are declared in src/hook.s after the
 # signature (4 bytes) + version (4) + the config block.
 HOOK_VARS = ["pad_held", "pad_new", "prev_pad", "menu_swapped", "last_app",
-             "bt_phase", "bt_menu_up", "bt_committed", "bt_idle", "dex_last",
-             "dex_mode", "pc_frames", "script_menu", "field_restore",
-             "map_frames", "map_pending", "prev_task"]
+             "bt_phase", "bt_menu_last", "bt_manual", "bt_system", "bt_drawn",
+             "bt_cursor_off", "bt_have_prev", "bt_lock",
+             "oak_drawn", "oak_data", "oak_state",
+             "dex_last", "dex_mode", "pc_frames", "script_menu", "field_yn_drawn",
+             "evolution_drawn", "field_restore",
+             "map_frames", "map_pending", "prev_task", "sm_drawn",
+             "list_ctrl", "list_drawn", "list_rect", "list_hold"]
 
 
 def cmd_hook(args):
@@ -283,4 +287,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

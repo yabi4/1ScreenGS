@@ -39,8 +39,8 @@ unpatched ROM too — you can switch back and forth whenever you like.
 
 | button | what it does |
 |---|---|
-| **X** | opens the overworld menu **and brings it to the top screen**; press again to close |
-| **B** | closes it; the world goes back on top |
+| **X** | opens the overworld menu **as a panel on the world**; press again to close |
+| **B** | closes it |
 | **L + R** | swaps the screens manually, any time — except inside the PC box, which holds its own routing every frame; press B to leave first |
 
 Everything else plays normally. You should rarely need L+R: the patch follows the game
@@ -55,42 +55,121 @@ the screen back to the world by itself.
 | screen | on top |
 |---|---|
 | Overworld | the world (unchanged — as it should be) |
+| Overworld menu (**X**) | the world, with the menu drawn in the top-right corner (below) |
 | Bag | pocket tabs and item grid |
 | Party | the Pokémon list |
 | Pokédex — species grid | the grid |
 | Pokédex — a Pokémon's detail level | **the area map** |
 | PC box | the option list **and** the box itself — Pokémon and item storage |
-| Field menus | shop lists, NPC choices, anything a script puts on the touch screen |
+| Field binary questions | the world, with `Yes / No` or `Oui / Non` beside the question |
+| Field lists | shop lists, PC options and longer NPC choices — their UI |
 | Pokégear, main menu, trainer card, options | their UI |
 | Name entry | the keyboard |
-| New game — Oak's speech | his text, and the **tutorial menu** and **gender picker** when those come up |
+| New game — Oak's speech | his text, with his questions answered beside it (below) |
 | Flying | the flight animation, from the moment you confirm the destination |
 | Dig, Escape Rope, Teleport | the world, not the menu you set off from |
-| Evolution, and any move it teaches | the Pokémon and the narration |
+| Evolution, and any move it teaches | the Pokémon, the narration and compact `Yes / No` choices |
 
-**In battle**, the screen follows what you are doing:
+**In battle**, the scene stays up while you choose. The commands are drawn onto it:
 
 | what is happening | on top |
 |---|---|
 | a turn is resolving | the battle scene |
-| `Que doit faire …?` appears | still the scene, so you can read the result |
-| you press the **D-pad** or **A** | the command menu |
-| ~1 s with no input | back to the scene |
-| you selected something from the menu (move list, bag, party) | the menu stays up |
-| you are browsing the bag or the party | the menu stays up |
+| `Que doit faire …?` appears | the scene, with `ATTAQUE / SAC / FUITE / POKéMON` on it |
+| you move the **D-pad** | the scene; the highlight moves with you |
+| a yes/no question is asked | the scene, with a small `Oui / Non` box |
+| you pick `ATTAQUE` | the move list |
+| you pick `SAC` or `POKéMON` | the bag or the party |
 | you confirm a move | the scene, immediately |
 
-`A` brings the menu up as well as the D-pad, because the cursor starts on `ATTAQUE` — if
-it did not, pressing A straight away would open the move list where you cannot see it.
+The commands sit in the right-hand end of the message window, which is otherwise empty —
+`ATTAQUE` across the top, then `SAC`, `FUITE` and `POKéMON` along the bottom. That is the
+arrangement the game's own cursor moves through, so the highlight tracks the D-pad
+exactly; it starts on `ATTAQUE` because the game's cursor does.
 
-The first `A` only brings the menu up; it does not hold it there. Holding it takes a
-selection made from a menu you can actually see. That is what stops the menu getting
-stuck on screen when you mash A through the battle intro.
+There is no timing anywhere in this. Nothing steps aside after a delay, and no press
+moves the screen out from under you — the screen changes when, and only when, you have
+picked something the game draws on the touch screen.
 
-Pressing **B** to back out of a submenu re-arms the ~1 s timeout, so the menu steps
-aside again once you stop.
+**Binary questions in the overworld** stay on the world too. When Nurse Joy asks whether
+to heal your Pokémon, `Oui / Non` or `Yes / No` appears at the right-hand end of her
+dialogue. Use **Up / Down** to choose, **A** to confirm, or **B** to decline, exactly as in
+the unpatched game. This applies to every field prompt that uses the same two-button
+controller. Longer choices — PC options, shops and multichoice questions — still swap to
+their full UI and are unchanged.
 
-The delay is `IDLE_FRAMES` in `src/hook.s` (frames at 60 fps) if you want it different.
+**After an evolution**, the questions about forgetting a move and giving up on teaching
+it also stay beside the Pokémon. The small `Oui / Non` or `Yes / No` labels follow the
+native selection. Use **Up / Down**, **A** and **B** exactly as before; the game still owns
+the input and decides which branch to take.
+
+**The overworld menu** is drawn on the world rather than swapped in:
+
+| what is happening | on top |
+|---|---|
+| you press **X** | the world, with the menu in the top-right corner |
+| you move the **D-pad** | the world; the highlight moves with you |
+| you pick `SAC`, `POKéMON`, `POKéDEX`… | that screen, exactly as before |
+| you come back from one | the world, with the menu still up |
+| you press **B** or **X** | the world, menu gone |
+
+It is laid out two columns by four, because that is the grid the game's own cursor walks:
+up and down wrap **within a column**, and left and right jump between them. A single list
+would have looked like the D-pad was broken, since DOWN only ever reaches four entries.
+
+Entries you have not earned yet leave their slot **empty**, exactly as they do on the touch
+screen — early in the game `SAC` sits alone in the left column with `DRESSEUR`, `SAUVER` and
+`OPTIONS` down the right, and `POKéDEX`, `POKéMON` and `POKéMATOS` appear in their own
+places as you unlock them. The list never shuffles.
+
+**In the Safari Zone, the Bug Contest and Pal Park the menu still takes the screen.** Those
+use a different arrangement that this cannot reproduce, so the patch detects them and falls
+back to swapping rather than drawing something wrong.
+
+One difference from the touch screen: the trainer-card row reads `DRESSEUR` rather than
+your name. The game fills that in at runtime from a placeholder, and the labels here are
+rasterised when you patch, long before there is a save file to read it from.
+
+**Shops and the PC** draw their menus in the top-right corner instead of taking the screen:
+
+| where | on top |
+|---|---|
+| a shop clerk | the shop, with `ACHETER / VENDRE / QUITTER` on it |
+| the PC, choosing which | `PC DE LEO / MON PC / PANTHEON / DECONNEXION` |
+| your own PC | `BOITE AUX LETTRES / CAPSULES BALL / ALBUM PHOTO / ETEINDRE` |
+| the storage system | `DEPOSER` / `RETIRER` / `DEPLACER POKéMON`, `DEPLACER OBJETS`, `SALUT!` |
+| you pick any of them | that screen, exactly as before |
+
+The storage menu is drawn as the 2×3 grid it actually is, two lines to an entry, so the
+D-pad moves through it the way it looks.
+
+`MON PC` is the one place the patch supplies a word of its own: the touch screen shows your
+name there, and the game only builds that at runtime, long after the labels are rasterised.
+
+Other list menus — NPC choices, the day-care, the Game Corner — still swap. The patch draws
+only menus it recognises, so one it has never seen keeps the old behaviour rather than
+risking the wrong words on screen. `docs/FINDINGS.md` lists the ones that could be added.
+
+**Starting a new game**, Oak's questions are answered on his own screen:
+
+| what is happening | on top |
+|---|---|
+| Oak talking | Oak, as always |
+| the tutorial menu (three options) | the menu — this one still swaps |
+| `Es-tu un garçon?` | Oak, with `GARÇON` and `FILLE` beside the text, left/right |
+| confirming your gender | Oak, with `OUI / NON` stacked, up/down |
+| entering your name | the keyboard — the one deliberate swap |
+| confirming your name | Oak, with `OUI / NON` |
+
+The gender options sit side by side and the confirmations stack, because that is how the
+game reads them: the gender question moves on left and right, the confirmations on up and
+down. The highlight follows whichever the game's own cursor is on. Its selected band uses
+the intro's own blue/silver colour in SoulSilver and gold in HeartGold. The small "look at
+the bottom screen" indicator embedded in Oak's question text is suppressed, so it does not
+flash immediately before the custom choices appear.
+
+**L + R** still works during a battle. It holds until the menu you are on changes, so
+backing out of the move list hands control back to the patch.
 
 ## Emulator setup (melonDS)
 

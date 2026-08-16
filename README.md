@@ -2,6 +2,12 @@
 
 Play **Pokémon HeartGold / SoulSilver** on a single screen.
 
+![The battle command menu drawn onto the scene](docs/img/battle.png)
+![The overworld menu drawn onto the world](docs/img/menu.png)
+
+*Both shots are the top screen on its own. The commands and the menu are **drawn onto the
+scene**, in the game's own words and font — nothing is swapped in from the touch screen.*
+
 > **v0.1b** — playable start to finish on French SoulSilver and HeartGold. See
 > [Compatibility](#compatibility) and [Status](#status).
 
@@ -10,30 +16,74 @@ critically the battle command menu. That makes the game awkward on a handheld li
 Steam Deck, where you want one screen filling the panel. This patch reroutes the game so
 that whatever you actually need is on the **top** screen, automatically.
 
-No new UI is drawn and no assets are replaced. The DS has two independent 2D engines, and
+Mostly this is rerouting, not redrawing. The DS has two independent 2D engines, and
 `POWCNT1` bit 15 decides which one drives the upper LCD; the patch rewrites the ~87 places
 the game sets that, and adds a small resident hook for the cases that need to change while
 you play.
+
+The exceptions are the battle command menu, binary questions in the overworld, the
+questions Oak asks at the start of a new game, the overworld menu, and the shop and PC
+menus. They are drawn onto the scene rather than swapped in. Even there nothing is
+replaced: the labels are the
+game's own words in the game's own font, pulled out of the ROM you supply and rasterised
+at patch time, so a French build says ATTAQUE / SAC / POKéMON / FUITE and an English one
+FIGHT / BAG / POKéMON / RUN without the patcher knowing which is which.
 
 |  | on the top screen |
 |---|---|
 | Overworld | the world (unchanged) |
 | Bag, party, Pokégear, main menu, trainer card, options | their UI |
 | Pokédex | the species grid, and the **area map** on a Pokémon's detail level |
-| PC box | the option list and the box — moving Pokémon, item storage |
-| Field menus | shop lists, NPC choices — anything a script draws below |
-| Overworld menu (**X**) | comes up with the menu, **B** puts the world back |
+| PC box | the box itself — moving Pokémon, item storage |
+| Shops and the PC | their menus **drawn on the world**; the screen only moves when you choose |
+| Field binary questions | the world, with **Yes / No** drawn in the dialogue window |
+| Field lists | longer NPC choices — their UI |
+| Overworld menu (**X**) | the world, with the menu **drawn on it**; **B** closes it |
 | Name entry | the keyboard |
-| New game | Oak's speech, the tutorial menu and the gender picker |
+| New game | Oak's speech, with his questions answered on his own screen |
 | Flying, Dig, Escape Rope | the animation, from the moment you confirm |
-| Evolution | the Pokémon, and any move it learns afterwards |
-| **Battles** | the scene — until you reach for the menu, then the menu |
+| Evolution | the Pokémon, its move-learning text, and compact **Yes / No** choices |
+| **Battles** | the scene, with the commands drawn on it; the screen only moves once you choose |
 
-Battles are the interesting part. The battle scene keeps the top screen so you can read
-what just happened; the command menu comes up when you press the **D-pad or A**, steps
-aside after ~1 s if you stop, stays put once you've selected something, and hands the
-screen back the instant you confirm a move. Move names, types and PP are all readable up
-there, and everything is D-pad navigable.
+Battles are the interesting part. The scene never leaves the top screen while you are
+choosing: **FIGHT / BAG / POKéMON / RUN are drawn onto it**, laid out the way the game's
+own cursor moves, and the highlight follows the D-pad. The screen only changes once you
+have actually picked something — the move list, the bag and the party come up then, and
+the scene returns the instant the turn starts. Binary prompts ("… changer de Pokémon?")
+get a small **Oui / Non** box in the same message window instead of taking the screen.
+
+Nothing is timed: there is no delay to wait through and no press that moves the screen
+out from under you.
+
+Binary questions in the overworld work the same way. Nurse Joy's offer, and every other
+field prompt that uses the shared two-button controller, keeps the world visible and puts
+**Yes / No** or **Oui / Non** in the right-hand end of the dialogue window. Up and down
+move the game's own selection; A and B keep their normal meanings. Longer lists such as
+the PC options, shops and multichoice questions still take the screen because they need
+the room.
+
+The move-learning questions after an evolution use a separate controller, but receive the
+same treatment. When the game asks whether to forget a move, or later whether to stop
+trying to teach it, the Pokémon remains visible and the existing localized **Yes / No**
+tiles mirror the game's own selection. The patch does not handle the buttons or result.
+
+The overworld menu works the same way: **X** draws it in the top-right corner of the world
+instead of taking the screen, laid out two columns by four because that is the grid the
+game's own cursor walks. Picking an entry opens it on the top screen exactly as before.
+
+**Shops and the PC** are drawn the same way — the clerk's `ACHETER / VENDRE / QUITTER`, and
+all three of the PC's menus including its 2×3 storage grid. These are the same object
+underneath, so one renderer covers them, but a menu is only drawn if the patch **recognises
+it by its own words**. Anything it has not seen swaps as before, which is what keeps an
+unknown NPC choice from ever appearing with the wrong labels on it.
+
+Starting a new game works the same way. **GARÇON / FILLE** for the gender question and
+**OUI / NON** for the confirmations are drawn beside Oak's text, so the screen stays on him
+throughout — it only changes for the naming keyboard, which genuinely needs the touch
+screen. The selected band uses Oak's own intro colour — blue/silver in SoulSilver and gold
+in HeartGold — and the obsolete lower-screen indicator is suppressed before it can flash.
+The tutorial menu still swaps: three options of running text will not fit beside the
+question the way two words do.
 
 **L + R** swaps the screens manually at any time, as an escape hatch.
 
@@ -84,13 +134,17 @@ Diamond/Pearl/Platinum are **not** supported — different code, different overl
 
 ## Status
 
-Everything below is behaviour that has been played through, not just implemented:
+The broad routes below were played through in earlier beta builds, not just implemented:
 the overworld and its menus, battles including sub-screens and the command-menu timing,
 the bag through every pocket, the party menu including reordering and summaries, the
 Pokédex with its area map, the PC boxes for Pokémon and items, the Pokégear's map, radio,
 phone and configuration, shops and NPC choice menus, flying, Dig and Escape Rope,
 evolution and the moves it teaches, and a new game from the title screen through Oak's
 speech to walking outdoors.
+
+The current compact field and post-evolution prompts were additionally exercised from
+melonDS savestates. The latest Oak focus-indicator and edition-colour refinements are
+code- and data-validated but still need a fresh-start visual pass on both editions.
 
 Notably that covers the bag, the party menu and the PC box, which are still raw assembly
 in the decompilation — nothing but play could have cleared them — and the Pokégear, which

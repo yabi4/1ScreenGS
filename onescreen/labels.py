@@ -228,7 +228,9 @@ SM_CELL_W_MAX = 9               # refuse rather than clip a long translation
 # screenBase 0x1000, 256x256 text, 4bpp.
 SM_CHAR_BASE = 0x06008000
 SM_SCREEN_BASE = 0x06001000
-SM_BASE_TILE = 0x90             # clear of the menu's own 130 tiles, far below 0x197
+SM_BASE_TILE = 0x84             # clear of the menu's own 130 tiles (0..0x81), and
+                                # low enough that the PC box menu's 269 tiles still
+                                # end below the map-name window at 0x197
 SM_ORIGIN_Y = 0                 # flush into the top-right corner
 SM_FRAME = 1                    # tiles of border on every side - the tilemap's minimum
 SM_BORDER_PX = 3                # of those 8 pixels, how many are actually grey
@@ -268,14 +270,67 @@ SM_PAL_HI_RGB = {0: 0, FG: _bgr555(2, 6, 2), SHADOW: _bgr555(31, 31, 31),
 # live. Every menu here has a first entry free of placeholders, which matters -
 # the player's own PC row expands to their name and could never be matched.
 LIST_MSGDATA_FILE = 191
-LIST_KEY_MAX = 16               # codes compared; the longest first entry is 17
-LIST_MENU_RECORD = 40
+LIST_KEY_MAX = 16               # codes COMPARED; the full length is checked too,
+                                # so a longer first entry still identifies exactly
+LIST_MAX_ENTRIES = 8
+LIST_MENU_RECORD = 52
 LIST_CELL_H = 2                 # tiles per entry - one glyph row
 LIST_FRAME_TILES = 9            # the border, shared with the X menu's frame
 
-# Each menu: a name, and its entries as msg_0191 indices in on-screen order.
+# The one label in this file that is NOT the ROM's own words. The game builds
+# your own PC's row from a placeholder and your name, so there is nothing to
+# extract - it has to be written out. Only the play-tested languages are listed;
+# anything else falls back to the trainer card's word, which does come from the
+# ROM and so stays correct in every language.
+SELF_PC = None                  # sentinel for that entry in LIST_MENUS
+SELF_PC_TEXT = {
+    "F": "MON PC",
+    "E": "MY PC",
+}
+
+
+def _ascii_codes(text: str):
+    """Letters and spaces to the game's own character codes."""
+    out = []
+    for ch in text:
+        if ch == " ":
+            out.append(478)
+        elif "A" <= ch <= "Z":
+            out.append(299 + ord(ch) - ord("A"))
+        else:
+            raise LabelError(f"{ch!r} has no code in this charmap")
+    return out
+
+
+# Each menu: a name, its entries as (msgdata file, index) in screen order, and
+# how many text lines an entry takes. The first entry is the identifying key, so
+# it must never hold a placeholder.
+#
+# `layout` is where each entry sits, as (row, column); None means a plain single
+# column. Only the PC box menu needs one - it is a 2x3 grid with SALUT! alone in
+# the right of the bottom row, which is where its cursor expects to find it.
 LIST_MENUS = (
-    ("shop", (321, 322, 323)),          # ACHETER / VENDRE / QUITTER
+    # ACHETER / VENDRE / QUITTER
+    ("shop", ((LIST_MSGDATA_FILE, 321), (LIST_MSGDATA_FILE, 322),
+              (LIST_MSGDATA_FILE, 323)), 1, None),
+    # PC DE LEO / <your PC> / PANTHEON / DECONNEXION. The second entry is
+    # msg_0191 63, which expands to the player's name at runtime and cannot be
+    # rasterised, so it uses the written-out MON PC / MY PC instead.
+    # 66 and 75 are easy to swap: French reads them DECONNEXION and ETEINDRE,
+    # English SWITCH OFF and LOG OUT - the pairing is inverted between the two.
+    # The indices below are the ones the game itself uses, taken from screenshots
+    # of both menus rather than from what the English words suggest.
+    ("pc_select", ((LIST_MSGDATA_FILE, 62), (SELF_PC, 0),
+                   (LIST_MSGDATA_FILE, 64), (LIST_MSGDATA_FILE, 66)), 1, None),
+    # BOITE AUX LETTRES / CAPSULES BALL / ALBUM PHOTO / ETEINDRE
+    ("pc_item", ((LIST_MSGDATA_FILE, 73), (LIST_MSGDATA_FILE, 74),
+                 (LIST_MSGDATA_FILE, 65), (LIST_MSGDATA_FILE, 75)), 1, None),
+    # DEPOSER / RETIRER / DEPLACER POKeMON, DEPLACER OBJETS, SALUT! - the only
+    # menu here whose entries are two lines, and the only one that is a grid.
+    ("pc_box", ((LIST_MSGDATA_FILE, 67), (LIST_MSGDATA_FILE, 68),
+                (LIST_MSGDATA_FILE, 69), (LIST_MSGDATA_FILE, 70),
+                (LIST_MSGDATA_FILE, 72)), 2,
+     ((0, 0), (0, 1), (1, 0), (1, 1), (2, 1))),
 )
 
 CELL_H = GRID_ROWS * 8          # 32 px
@@ -417,7 +472,10 @@ def _narc_files(data: bytes):
     return [data[base + s:base + e] for s, e in fat]
 
 
-def _decode_message(archive: bytes, index: int):
+NEWLINE = 0xE000                # the line break inside a two-line menu entry
+
+
+def _decode_message(archive: bytes, index: int, keep_break: bool = False):
     """Return one message from a Gen-IV .gmm as raw character codes."""
     count, key = struct.unpack_from("<HH", archive, 0)
     if not 0 <= index < count:
@@ -434,8 +492,11 @@ def _decode_message(archive: bytes, index: int):
     for j in range(length):
         out.append(struct.unpack_from("<H", archive, off + j * 2)[0] ^ k2)
         k2 = (k2 + 0x493D) & 0xFFFF
-    # Messages are terminated by 0xFFFF; control codes start at 0xE000 and none
-    # of the four labels contain any.
+    # Messages are terminated by 0xFFFF; control codes start at 0xE000. Most
+    # labels contain none, but the PC box menu's entries are two lines and the
+    # break between them is 0xE000 itself, so that one asks to keep it.
+    if keep_break:
+        return [c for c in out if c < 0xE000 or c == NEWLINE]
     return [c for c in out if c < 0xE000]
 
 
@@ -609,26 +670,38 @@ def _render(font: Font, placed, selected, width=CELL_W, invert=False):
 
 
 def _render_strip(font: Font, codes, width, height):
-    """Return one label on its own paper, centred - a start-menu cell.
+    """Return one label on its own paper, centred - a menu cell.
 
     No selected/unselected variants: the panel highlights by pointing the cell's
     tilemap entries at a different palette, so one set of pixels serves both.
+    A 0xE000 in `codes` breaks the label onto a second line, which is how the PC
+    box menu's entries are written.
     """
-    canvas = [[PAPER] * width for _ in range(height)]
-    x = (width - _text_width(font, codes)) // 2
-    y = (height - ROW_H) // 2
+    lines = [[]]
     for code in codes:
-        glyph = font.glyph(code)
-        w = font.width(code)
-        for gy in range(ROW_H):
-            ty = y + gy
-            if not 0 <= ty < height:
-                continue
-            for gx in range(w):
-                tx = x + gx
-                if 0 <= tx < width and glyph[gy][gx] != PAPER:
-                    canvas[ty][tx] = glyph[gy][gx]
-        x += w
+        if code == NEWLINE:
+            lines.append([])
+        else:
+            lines[-1].append(code)
+    lines = [ln for ln in lines if ln] or [[]]
+
+    canvas = [[PAPER] * width for _ in range(height)]
+    top = (height - ROW_H * len(lines)) // 2
+    for row, line in enumerate(lines):
+        x = (width - _text_width(font, line)) // 2
+        y = top + row * ROW_H
+        for code in line:
+            glyph = font.glyph(code)
+            w = font.width(code)
+            for gy in range(ROW_H):
+                ty = y + gy
+                if not 0 <= ty < height:
+                    continue
+                for gx in range(w):
+                    tx = x + gx
+                    if 0 <= tx < width and glyph[gy][gx] != PAPER:
+                        canvas[ty][tx] = glyph[gy][gx]
+            x += w
     return canvas
 
 
@@ -643,6 +716,60 @@ def _to_tiles(canvas, cols=GRID_COLS, rows=GRID_ROWS) -> bytes:
                     lo = row[tcol * 8 + x] & 0xF
                     hi = row[tcol * 8 + x + 1] & 0xF
                     out.append(lo | (hi << 4))
+    return bytes(out)
+
+
+PACK_MAXLEN = 18                # 4-bit length field, +3
+PACK_MAXDISP = 4096             # 12-bit displacement, +1
+
+
+def _pack(data: bytes) -> bytes:
+    """LZ77 over 32-bit WORDS, so every write the hook makes is a word store.
+
+    Byte-granular LZ77 compresses these tiles better (about 25% against 34%) but
+    DS VRAM ignores byte writes, so a byte decoder would have to buffer a pending
+    half of each halfword and read its own output back to resolve matches. Working
+    in words removes that entirely: literals and matches are whole words, matches
+    read back with `ldr` and write with `str`, and the decoder is a few dozen
+    instructions with nothing subtle in it.
+
+    Stream: u32 output word count, then groups of one flag byte and eight units,
+    MSB first. A clear flag is a literal word; a set flag is a two-byte token,
+    length = (t >> 12) + 3 words and displacement = (t & 0xFFF) + 1 words.
+    Overlapping matches are intended - copying forward one word at a time repeats
+    the source, which is how runs of paper encode so small.
+    """
+    if len(data) % 4:
+        raise LabelError("packed data must be a whole number of words")
+    words = [struct.unpack_from("<I", data, i)[0] for i in range(0, len(data), 4)]
+    out = bytearray(struct.pack("<I", len(words)))
+    i = 0
+    while i < len(words):
+        flags = 0
+        chunk = bytearray()
+        for unit in range(8):
+            if i >= len(words):
+                break
+            best_len, best_disp = 0, 0
+            for disp in range(1, min(PACK_MAXDISP, i) + 1):
+                start = i - disp
+                length = 0
+                while (length < PACK_MAXLEN and i + length < len(words)
+                       and words[start + length % disp] == words[i + length]):
+                    length += 1
+                if length > best_len:
+                    best_len, best_disp = length, disp
+                if best_len >= PACK_MAXLEN:
+                    break
+            if best_len >= 3:
+                chunk += struct.pack("<H", ((best_len - 3) << 12) | (best_disp - 1))
+                flags |= 0x80 >> unit
+                i += best_len
+            else:
+                chunk += struct.pack("<I", words[i])
+                i += 1
+        out.append(flags)
+        out += chunk
     return bytes(out)
 
 
@@ -781,15 +908,17 @@ def _startmenu(font: Font, archive, off: int):
             rows.append(SM_SCREEN_BASE + (ty * 32 + tx) * 2)
     rows += [0] * (16 - len(rows))
 
+    packed = _pack(bytes(pool))
+    packed += b"\0" * (-len(packed) % 4)         # keep what follows word-aligned
     record = struct.pack(
-        "<IIIIIHBBBBBBBBH", off, len(pool), SM_CHAR_BASE + SM_BASE_TILE * 32,
-        off + len(pool), PAL_RAM_MAIN_BG + SM_PAL_NORM * 32,
+        "<IIIIIHBBBBBBBBH", off, len(packed), SM_CHAR_BASE + SM_BASE_TILE * 32,
+        off + len(packed), PAL_RAM_MAIN_BG + SM_PAL_NORM * 32,
         SM_BASE_TILE, strip_tiles, cell_w, SM_CELL_H, SM_CELLS,
         SM_PAL_NORM, SM_PAL_HI, len(labels), blank, 0)
     record += bytes(cell_label) + bytes(cell_bit)
     record += struct.pack("<16I", *rows)
     record += struct.pack(
-        "<IIBBH", off + len(pool) + len(pals),
+        "<IIBBH", off + len(packed) + len(pals),
         SM_SCREEN_BASE + (frame_y * 32 + frame_x) * 2, frame_rows, frame_cols, 0)
     if len(record) != SM_RECORD_SIZE:
         raise LabelError(f"start menu record is {len(record)} bytes, "
@@ -799,10 +928,18 @@ def _startmenu(font: Font, archive, off: int):
     if last > 0x197:
         raise LabelError(
             f"the panel would end at tile {last:#x}, past the map-name window at 0x197")
-    return bytes(record), bytes(pool) + pals + bytes(frame_map)
+    return bytes(record), packed + pals + bytes(frame_map)
 
 
-def _listmenu(font: Font, archive, off: int):
+def _self_pc_codes(archive, region: str):
+    """"MON PC" / "MY PC", or the trainer card's word where that is unknown."""
+    text = SELF_PC_TEXT.get(region)
+    if text is not None:
+        return _ascii_codes(text)
+    return _decode_message(archive[TRAINER_MSGDATA_FILE], TRAINER_MSG)
+
+
+def _listmenu(font: Font, archive, off: int, region: str = ""):
     """Return (record, payload) for the script list menus.
 
     The pool is the nine border tiles followed by every supported menu's label
@@ -814,19 +951,48 @@ def _listmenu(font: Font, archive, off: int):
         raise LabelError(f"{MSGDATA_NARC} has no file {LIST_MSGDATA_FILE}")
     src = archive[LIST_MSGDATA_FILE]
 
-    pool = bytearray()
+    # The border and each menu are packed SEPARATELY: only one menu's strips are
+    # ever sent, and a single stream could not be decoded from the middle.
+    frame = bytearray()
     for shape in FRAME_SHAPES:
-        pool += _to_tiles(_frame_tile(**shape), 1, 1)
+        frame += _to_tiles(_frame_tile(**shape), 1, 1)
+    pool = bytearray(_pack(bytes(frame)))
+    pool += b"\0" * (-len(pool) % 4)
 
     menus = []
-    for name, msgs in LIST_MENUS:
+    for name, msgs, lines, layout in LIST_MENUS:
+        cell_h = lines * LIST_CELL_H
+        if layout is None:
+            layout = tuple((i, 0) for i in range(len(msgs)))
+        if len(layout) != len(msgs):
+            raise LabelError(f"list menu {name}: layout covers {len(layout)} of "
+                             f"{len(msgs)} entries")
+        if len(layout) > LIST_MAX_ENTRIES:
+            raise LabelError(f"list menu {name} has {len(layout)} entries, over "
+                             f"the {LIST_MAX_ENTRIES} the record holds")
+        n_rows = max(r for r, _c in layout) + 1
+        n_cols = max(c for _r, c in layout) + 1
         entries = []
-        for msg in msgs:
-            codes = _decode_message(src, msg)
+        for file_id, msg in msgs:
+            if file_id is SELF_PC:
+                entries.append(_self_pc_codes(archive, region))
+                continue
+            if file_id >= len(archive):
+                raise LabelError(f"{MSGDATA_NARC} has no file {file_id}")
+            codes = _decode_message(archive[file_id], msg, keep_break=lines > 1)
             if not codes:
                 raise LabelError(f"list menu {name}: message {msg} decoded to nothing")
             entries.append(codes)
-        widest = max(_text_width(font, c) for c in entries)
+        # A two-line entry is only as wide as its widest line, not the whole run.
+        widest = 0
+        for codes in entries:
+            run = []
+            for code in list(codes) + [NEWLINE]:
+                if code == NEWLINE:
+                    widest = max(widest, _text_width(font, run))
+                    run = []
+                else:
+                    run.append(code)
         cell_w = (widest + 8 + 7) // 8
         if cell_w + 2 > 32:
             raise LabelError(f"list menu {name} needs {cell_w + 2} tiles, wider than the screen")
@@ -834,10 +1000,14 @@ def _listmenu(font: Font, archive, off: int):
         if len(key) > LIST_KEY_MAX:
             key = key[:LIST_KEY_MAX]
         strip_off = len(pool)
+        strips = bytearray()
         for codes in entries:
-            pool += _to_tiles(_render_strip(font, codes, cell_w * 8, LIST_CELL_H * 8),
-                              cell_w, LIST_CELL_H)
-        menus.append((name, strip_off, cell_w * LIST_CELL_H, len(entries), cell_w,
+            strips += _to_tiles(_render_strip(font, codes, cell_w * 8, cell_h * 8),
+                                cell_w, cell_h)
+        pool += _pack(bytes(strips))
+        pool += b"\0" * (-len(pool) % 4)
+        menus.append((name, strip_off, cell_w * cell_h, len(entries), cell_w, cell_h,
+                      n_cols, n_rows, layout,
                       key, len(entries[0])))
 
     pals = _palette(SM_PAL_NORM_RGB) + _palette(SM_PAL_HI_RGB)
@@ -847,17 +1017,26 @@ def _listmenu(font: Font, archive, off: int):
         SM_BASE_TILE, len(menus), SM_PAL_NORM, SM_PAL_HI, 0, 0, 0)
     if len(record) != LIST_RECORD_HEAD:
         raise LabelError(f"list header is {len(record)} bytes, expected {LIST_RECORD_HEAD}")
-    for _name, strip_off, strip_tiles, n, cell_w, key, key_full in menus:
-        rec = struct.pack("<HHBBBB", strip_off, strip_tiles, n, cell_w,
-                          LIST_CELL_H, min(key_full, LIST_KEY_MAX))
+    for (_name, strip_off, strip_tiles, n, cell_w, cell_h, n_cols, n_rows,
+         layout, key, key_full) in menus:
+        if key_full > 0xFF:
+            raise LabelError("a first entry longer than 255 characters cannot be keyed")
+        # key_full is the WHOLE length; the hook compares only the first
+        # LIST_KEY_MAX codes but checks this too, so a 17-character entry is
+        # still identified exactly rather than failing to match at all.
+        rec = struct.pack("<HHBBBBBB", strip_off, strip_tiles, n, cell_w,
+                          cell_h, key_full, n_cols, n_rows)
         rec += struct.pack(f"<{LIST_KEY_MAX}H",
                            *(list(key) + [0] * (LIST_KEY_MAX - len(key))))
+        pos = [(r << 4) | c for r, c in layout]
+        rec += bytes(pos + [0] * (LIST_MAX_ENTRIES - len(pos)))
+        rec += b"\0" * (LIST_MENU_RECORD - len(rec))
         if len(rec) != LIST_MENU_RECORD:
             raise LabelError(f"list menu record is {len(rec)}, expected {LIST_MENU_RECORD}")
         record += rec
 
     # Every menu loads at the same base, so only the largest has to fit.
-    worst = LIST_FRAME_TILES + max(n * t for _n2, _o, t, n, _w, _k, _kf in menus)
+    worst = LIST_FRAME_TILES + max(m[3] * m[2] for m in menus)
     if SM_BASE_TILE + worst > 0x197:
         raise LabelError(
             f"the widest list panel ends at tile {SM_BASE_TILE + worst:#x}, "
@@ -936,7 +1115,12 @@ def build(rom, log=print) -> bytes:
         row_bytes = cols * 32
         image_bytes = row_bytes * GRID_ROWS
         set_offsets.append(off)
-        off += (variants + 1) * image_bytes
+        # The wipe is NOT stored. It is one image of solid paper per set, and
+        # four of them came to 3840 bytes of 0xFF in a blob with no room to
+        # spare, so the hook fills instead of copying when asked for the last
+        # image. The records still count it, so nothing that asks for a wipe
+        # changed.
+        off += variants * image_bytes
 
     blob = bytearray(struct.pack("<4sBBH", BLOB_MAGIC, GRID_ROWS,
                                  len(geometries), 0))
@@ -956,7 +1140,14 @@ def build(rom, log=print) -> bytes:
     # `off` now points past the last image, which is where the panel's own data
     # goes, so the record can carry absolute blob offsets like the others.
     sm_record, sm_payload = _startmenu(font, archive, off)
-    list_record, list_payload = _listmenu(font, archive, off + len(sm_payload))
+    # The fourth letter of the game code is the region, which is the only thing
+    # that decides your own PC's row - the one label not taken from the ROM.
+    try:
+        region = bytes(rom.idCode)[3:4].decode("ascii", "ignore")
+    except Exception:                                   # noqa: BLE001
+        region = ""
+    list_record, list_payload = _listmenu(
+        font, archive, off + len(sm_payload), region)
     blob += b"\0" * (SM_RECORD_OFF - len(blob))
     blob += sm_record
     blob += b"\0" * (LIST_RECORD_OFF - len(blob))
@@ -965,14 +1156,15 @@ def build(rom, log=print) -> bytes:
     if len(blob) != BLOB_HEADER:
         raise LabelError(f"header is {len(blob)} bytes, expected {BLOB_HEADER}")
 
+    images_bytes = 0
     for placed_set, variants, width, cols, invert in sets:
         for sel in range(variants):
             blob += _to_tiles(
                 _render(font, placed_set, sel, width, invert), cols)
-        blob += b"\xFF" * (cols * 32 * GRID_ROWS)   # the wipe: all paper
+        images_bytes += variants * cols * 32 * GRID_ROWS
     blob += sm_payload
     blob += list_payload
-    expect = BLOB_SIZE + len(sm_payload) + len(list_payload)
+    expect = BLOB_HEADER + images_bytes + len(sm_payload) + len(list_payload)
     if len(blob) != expect:
         raise LabelError(f"blob is {len(blob)} bytes, expected {expect}")
 

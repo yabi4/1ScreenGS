@@ -116,18 +116,43 @@ Highlighting costs no pixels either — the selected cell's tilemap entries are 
 a different palette number, the same trick `ov27_0225B398` uses on the touch screen. One
 finished image per highlighted entry would have been 32 KB against 11 KB of free ITCM.
 
-### The shop menu is drawn on the world
+### The shop and the PC menus are drawn on the world
 
-`ACHETER / VENDRE / QUITTER` appears in the top-right corner and the screen stays on the
-world; picking one opens it on the top screen as before.
+Four menus now appear as a panel in the top-right corner instead of taking the screen,
+and the screen only changes when you pick something:
 
-The machinery behind it is general — the shop's menu and all three of the PC's are the
-same object underneath — but a menu is only drawn if the patch **recognises** it, by its
-entry count and the characters of its first entry. Anything else swaps, as it always did,
-so an NPC choice the patch has never seen can never come up with the wrong words on it.
+| menu | entries |
+|---|---|
+| Shop | `ACHETER / VENDRE / QUITTER` |
+| PC — which PC | `PC DE LEO / MON PC / PANTHEON / DECONNEXION` |
+| PC — your own | `BOITE AUX LETTRES / CAPSULES BALL / ALBUM PHOTO / ETEINDRE` |
+| PC — storage | `DEPOSER / RETIRER / DEPLACER POKéMON`, `DEPLACER OBJETS`, `SALUT!` |
 
-Only the shop is wired up so far. The rest is a storage limit rather than an unknown: the
-four label sets need 15 KB and there are about 3.6 KB left. See `docs/FINDINGS.md`.
+They are all the same object underneath, so one renderer covers them: a script builds the
+menu, the touch controller renders it, and the controller points back at it. The storage
+menu is drawn as the 2×3 grid it really is, two lines to an entry, rather than as a list.
+
+`MON PC` is the one label in the patch that is not the ROM's own words — the game builds
+that row from a placeholder and your name, so there is nothing to extract. French and
+English are written out; any other language falls back to the trainer card's word, which
+does come from the ROM.
+
+### The tile pool is compressed
+
+Everything drawn now travels through an LZ77 variant that works in 32-bit words, so the
+decompressor writes VRAM with plain word stores — DS VRAM ignores byte writes, and a
+byte-granular decoder would have had to buffer half-written halfwords and read its own
+output back.
+
+It more than pays for itself: the label blob went from 24936 bytes with three menus to
+18256 with four, and the payload is now **smaller than before any of this work started**
+while doing considerably more. The all-paper "wipe" images are no longer stored either —
+3840 bytes of `0xFF` that the hook now fills.
+
+A menu is only drawn if the patch **recognises** it, by its entry count and the characters
+of its first entry — message ids do not survive to runtime. Anything else swaps, as it
+always did, so an NPC choice the patch has never seen can never come up with the wrong
+words on it. `docs/FINDINGS.md` lists the other menus that could be added the same way.
 
 ### Behaviour fixed along the way
 

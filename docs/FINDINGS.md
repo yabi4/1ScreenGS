@@ -1552,3 +1552,89 @@ PC box alone needs 8.3 KB and 269 VRAM tiles against the 263 free below the
 map-name window, because its entries are two lines tall. The remaining menus need
 the tile pool compressed - it is almost all paper and would RLE well - rather
 than any new reverse engineering. Everything they need is in this section.
+
+
+## Who owns the VRAM you just drew into
+
+Four separate bugs in this project have been the same mistake: **assuming what we
+drew is still there.** Tiles, palette and tilemap are each reclaimed
+independently, by different things, at different times. Worth reading before
+drawing anywhere new.
+
+**The tilemap is not yours - the game keeps a shadow copy.** Every layer has a
+buffer in main RAM which the game commits wholesale whenever its contents change;
+reprinting a menu option's description does exactly that. Cells written straight
+to VRAM are not in that copy, so the commit erases them and the panel reappears a
+frame later. This is what made the PC menus flash on every cursor move.
+
+Proved rather than guessed: with the box menu open, `bgs[3].tilemapBuffer` held
+**zeros across the whole panel rectangle**. The fix is to write the panel into
+that buffer as well as VRAM, so the next commit repaints it instead.
+
+```
+FieldSystem +0x08 -> BgConfig
+    +0x08 Background bgs[8], 44 bytes each
+        +0x00 tilemapBuffer, +0x04 bufferSize (0x800 for a 32x24 map)
+    so MAIN_3's buffer pointer is at BgConfig + 0x8C
+```
+
+**The tiles and the palette are not yours either.** Any application that runs in
+between - the photo album, the mailbox, the bag - may take the same tiles and
+palette slots. A cached "already uploaded" flag then leaves the tilemap pointing
+at whatever that application left, which draws as a **solid black box** rather
+than as anything obviously wrong.
+
+Two guards, because one is not enough: forget the upload when the running
+application is not the field, *and* forget it whenever no panel was up recently.
+The second catches whatever is a field task rather than an application, which is
+not always obvious from the outside.
+
+**A cached upload flag must record WHICH thing is loaded, not merely that
+something is.** A single boolean meant stepping from the PC's list into its box
+menu kept the previous menu's strips and drew the new tilemap over them.
+
+**Clear on change, not only on close.** Panels are not all the same size, so a
+smaller one drawn where a larger one was leaves the old edges on screen.
+
+## Other menus that could be drawn next
+
+`msg_0191` is the archive the script list menus default to, so scanning it for
+short strings enumerates the candidates. Everything below already works with the
+renderer in place - each needs a label set and its first entry as an identifying
+key, nothing more.
+
+Worth doing, common in ordinary play:
+
+| menu | msg_0191 entries |
+|---|---|
+| Day-care | 133 DEPOSER POKeMON, 134 CHERCHER POKeMON, 132 RETOUR |
+| Move Deleter / Tutor / Name Rater | short confirm lists |
+| Union Room | 168 SALUER, 169 DISCUTER, 170 TCHAT |
+
+Occasional or optional content:
+
+| menu | msg_0191 entries |
+|---|---|
+| Battle Tower / Frontier | 6-10 COMBAT SOLO / DUO / MIXTE / MULTI / 50 |
+| Pokeathlon | 271-279 |
+| Shard trading | 205-208 TESSON ROUGE / BLEU / JAUNE / VERT |
+| Bug Contest | 199 INSCRIRE, 200 INFORMATIONS, 201 QUITTER |
+| Safari Zone | 194 REGLES DE BASE, 195 SHOW CAPTURE, 196 STOCKAGE |
+| Fossil selection | 159-165, seven fossil names |
+
+Two caveats. Several of these live in the special zones - Safari, the Bug
+Contest, the Pokeathlon - where the X menu already falls back to swapping because
+their grids cannot be reproduced, so each needs checking on its own. And every
+`OUI / NON` prompt (42/43, 46/47) goes through the field yes/no path instead, not
+this renderer.
+
+The honest read: after the four already done, the day-care and the move deleter
+are the only ones a normal playthrough meets often enough to earn their label
+budget. The rest are one-offs where swapping costs nothing.
+
+## Still outstanding
+
+The **X menu writes its tilemap to VRAM only**, so it has the shadow-copy bug
+described above. Nothing has been seen to erase it - while it is open the game
+pauses map objects and no message box is printed - but the defect is real and the
+fix is the one already applied to the list menus.

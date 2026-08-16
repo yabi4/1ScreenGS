@@ -204,7 +204,7 @@ LABEL_GEO_COUNT  = 5
 @ Reserved space for the label images; the patcher refuses rather than overrun it.
 @ The five geometry records, start-menu record and four unique localized image
 @ sets fit here with headroom. The field geometry aliases the battle Yes/No set.
-LABEL_BLOB_SIZE = 24576         @ reserved; the patcher refuses rather than overrun it
+LABEL_BLOB_SIZE = 19456         @ reserved; the patcher refuses rather than overrun it
 
 @ The main-loop call we displace: `bl 0x0200110C` at 0x02000DB0.
 ORIG_LOOP_FN = 0x0200110C + 1   @ +1 = Thumb
@@ -432,15 +432,39 @@ LIST_N_MENUS = 22               @ u8
 LIST_PAL_NORM = 23
 LIST_PAL_HI = 24
 LIST_MENUS_OFF = 0x1C           @ first per-menu record
-LIST_MENU_RECORD = 40
+LIST_MENU_RECORD = 52
 LIST_M_STRIP_OFF = 0            @ u16, byte offset of its strips in the pool
 LIST_M_STRIP_TILES = 2          @ u16
 LIST_M_ENTRIES = 4              @ u8
 LIST_M_CELL_W = 5
 LIST_M_CELL_H = 6
-LIST_M_KEY_LEN = 7
-LIST_M_KEY = 8                  @ u16 key[16]
+LIST_M_KEY_FULL = 7             @ the first entry's WHOLE length, not the clamped
+                                @ comparison length - BOITE AUX LETTRES is 17
+                                @ characters, and checking 17 against the 16 we
+                                @ store made that menu never match at all
+LIST_M_COLS = 8
+LIST_M_ROWS = 9
+LIST_M_KEY = 10                 @ u16 key[16]
+LIST_M_POS = 42                 @ u8 pos[8], (row << 4) | column per entry
+LIST_KEY_MAX = 16
 LIST_FRAME_TILES = 9
+LIST_HOLD_FRAMES = 8            @ ~0.13s; long enough to bridge a reprint, short
+                                @ enough that a real close is not visibly delayed
+
+@ The panel has to go into the game's OWN tilemap buffer as well as VRAM.
+@
+@ The game keeps a shadow copy of each layer's map and commits it wholesale
+@ whenever its contents change - reprinting a menu option's description does
+@ exactly that. Cells written straight to VRAM are not in that copy, so every
+@ reprint erased the panel and it reappeared a frame later. Read out of
+@ beta-ui.ml1 while the PC box menu was open: the buffer held zeros across the
+@ whole panel rectangle, which is what the commit was writing over us.
+@
+@ FieldSystem +0x08 -> BgConfig; its Background array starts at +8 and each entry
+@ is 44 bytes, so MAIN_3's buffer pointer is at +8 + 3*44.
+BGCONFIG_OFF = 0x08
+BG3_BUFFER_OFF = 0x8C
+BG_BUFFER_SIZE = 0x800
 
 @ Oak's speech, overlay 53. One of the applications that sets POWCNT1 nowhere at
 @ all, so it simply inherits whatever routing it starts with - which left the
@@ -676,6 +700,7 @@ sm_drawn:       .word 0         @ 1 once the X menu's tiles and palettes are in 
 list_ctrl:      .word 0         @ overlay 27's touch controller, or 0 - see FieldMode3
 list_drawn:     .word 0         @ 1 once a list menu's pool is in VRAM
 list_rect:      .word 0         @ x | cols<<8 | rows<<16 of the panel last drawn
+list_hold:      .word 0         @ frames left to keep a panel that stopped confirming
 
 @ Kept below the word variables above, not among them: tools/savestate.py reads
 @ that run as a flat array of words and a six-byte table in the middle of it
@@ -1214,7 +1239,16 @@ OneScreen_BattleMenu:
     adds    r3, r3, r2
     adds    r4, r7, r3              @ src
     ldrh    r5, [r1, #8]            @ bytes per tile row
-    movs    r7, r1                  @ 3-bit immediate cannot reach 12
+
+    @ The last image of every set is the wipe: solid paper, and not stored. Four
+    @ of them was 3840 bytes of 0xFF in a blob that had none to spare, so it is
+    @ filled here instead. Asking for it is unchanged - the records still count it.
+    ldrh    r2, [r1, #10]           @ images, wipe included
+    subs    r2, #1
+    cmp     r0, r2
+    bne     34f
+    movs    r4, #0                  @ 0 = fill, and r4 is the source otherwise
+34: movs    r7, r1                  @ 3-bit immediate cannot reach 12
     adds    r7, #12                 @ -> the row address table
 
     movs    r3, #0
@@ -1223,11 +1257,19 @@ OneScreen_BattleMenu:
     lsls    r0, r3, #2
     ldr     r0, [r7, r0]            @ absolute destination; the boxes sit on
     movs    r2, r5                  @ different character bases
+    cmp     r4, #0
+    beq     37f
 36: ldmia   r4!, {r1}
     stmia   r0!, {r1}
     subs    r2, #4
     bne     36b
-    adds    r3, #1
+    b       38f
+37: movs    r1, #0                  @ all-paper: every nibble 0xF
+    subs    r1, #1
+33: stmia   r0!, {r1}
+    subs    r2, #4
+    bne     33b
+38: adds    r3, #1
     b       35b
 39: pop     {r4, r5, r6, r7, pc}
     .align  2
@@ -2314,15 +2356,11 @@ OneScreen_StartMenu:
     ldr     r0, [r0]
     cmp     r0, #0
     bne     74f                     @ strips are already in VRAM
-    ldr     r0, =OneScreen_Labels
+    ldr     r0, =OneScreen_Labels   @ the strips are packed; see OneScreen_Unpack
     ldr     r1, [r7, #SM_TILES_OFF]
-    adds    r1, r0, r1
-    ldr     r2, [r7, #SM_TILES_DEST]
-    ldr     r3, [r7, #SM_TILES_BYTES]
-72: ldmia   r1!, {r0}
-    stmia   r2!, {r0}
-    subs    r3, #4
-    bne     72b
+    adds    r0, r0, r1
+    ldr     r1, [r7, #SM_TILES_DEST]
+    bl      OneScreen_Unpack
     ldr     r0, =OneScreen_Labels   @ both palettes at once; the builder keeps
     ldr     r1, [r7, #SM_PAL_OFF]   @ the highlighted one immediately after
     adds    r1, r0, r1
@@ -2449,6 +2487,128 @@ OneScreen_StartMenu:
     .pool
 
 @ ---------------------------------------------------------------------------
+@ void OneScreen_Unpack(r0 = packed stream, r1 = destination)
+@
+@ LZ77 over 32-bit words, the format onescreen/labels.py::_pack writes. Words
+@ rather than bytes because DS VRAM ignores byte writes: a byte decoder would
+@ have to hold a pending half of each halfword and read its own output back to
+@ resolve matches. In words every literal and every match is a `str`, and matches
+@ read back with `ldr` - nothing subtle, which matters for the only routine here
+@ that writes VRAM from a variable-length input.
+@
+@ Literals are assembled from four `ldrb`. The stream is byte-packed, so a
+@ literal word is rarely 4-byte aligned, and an `ldr` on a misaligned address
+@ rotates rather than faults - it would silently read the right bytes in the
+@ wrong order.
+@
+@ Overlapping matches are deliberate: a displacement of one word copied forward
+@ repeats that word, which is how runs of paper cost two bytes per 72.
+@ ---------------------------------------------------------------------------
+@ ---------------------------------------------------------------------------
+@ void *OneScreen_MapBuffer(void) - the game's own MAIN_3 tilemap buffer, or 0.
+@ Everything drawn on that layer is written here as well as to VRAM, so the
+@ game's next commit repaints the panel instead of erasing it.
+@ ---------------------------------------------------------------------------
+    .global OneScreen_MapBuffer
+    .thumb_func
+OneScreen_MapBuffer:
+    push    {r4, lr}
+    ldr     r0, =cfg_field_sys
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     9f
+    ldr     r0, [r0]                @ sFieldSysPtr
+    cmp     r0, #0
+    beq     9f
+    ldr     r0, [r0, #BGCONFIG_OFF]
+    movs    r1, #BG3_BUFFER_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     9f
+    ldr     r0, =cfg_field_sys
+    ldr     r0, [r0]
+    ldr     r0, [r0]
+    ldr     r0, [r0, #BGCONFIG_OFF]
+    movs    r1, #BG3_BUFFER_OFF
+    ldr     r4, [r0, r1]
+    movs    r0, r4
+    ldr     r1, =BG_BUFFER_SIZE
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     9f
+    movs    r0, r4
+    pop     {r4, pc}
+9:  movs    r0, #0
+    pop     {r4, pc}
+    .align  2
+    .pool
+
+    .global OneScreen_Unpack
+    .thumb_func
+OneScreen_Unpack:
+    push    {r4, r5, r6, r7, lr}
+    ldr     r2, [r0]                @ words of output
+    adds    r0, #4
+10: cmp     r2, #0
+    beq     19f
+    ldrb    r4, [r0]                @ eight flags, MSB first
+    adds    r0, #1
+    movs    r5, #8
+11: cmp     r5, #0
+    beq     10b
+    cmp     r2, #0
+    beq     19f
+    movs    r6, #0x80
+    tst     r4, r6
+    beq     13f
+
+    ldrb    r6, [r0]                @ match: a two-byte token
+    ldrb    r7, [r0, #1]
+    adds    r0, #2
+    lsls    r7, r7, #8
+    orrs    r6, r7
+    movs    r7, r6
+    lsrs    r7, r7, #12
+    adds    r7, #3                  @ length in words
+    ldr     r3, =0xFFF
+    ands    r3, r6
+    adds    r3, #1
+    lsls    r3, r3, #2              @ displacement in bytes
+    movs    r6, r1
+    subs    r6, r6, r3
+15: cmp     r7, #0
+    beq     17f
+    ldr     r3, [r6]
+    str     r3, [r1]
+    adds    r6, #4
+    adds    r1, #4
+    subs    r7, #1
+    subs    r2, #1
+    beq     19f
+    b       15b
+
+13: ldrb    r6, [r0]                @ literal: assembled byte by byte
+    ldrb    r3, [r0, #1]
+    lsls    r3, r3, #8
+    orrs    r6, r3
+    ldrb    r3, [r0, #2]
+    lsls    r3, r3, #16
+    orrs    r6, r3
+    ldrb    r3, [r0, #3]
+    lsls    r3, r3, #24
+    orrs    r6, r3
+    str     r6, [r1]
+    adds    r0, #4
+    adds    r1, #4
+    subs    r2, #1
+17: lsls    r4, r4, #1
+    subs    r5, #1
+    b       11b
+19: pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
 @ int OneScreen_ListMenu(void)
 @ Draw a script list menu - the shop's, the PC's - onto the world. 1 if drawn.
 @
@@ -2476,7 +2636,19 @@ OneScreen_ListMenu:
     ldr     r0, =LIST_RECORD_OFF
     adds    r7, r7, r0              @ -> the panel's record
 
-    ldr     r0, =list_ctrl
+    @ If no panel was up recently, forget the upload: whatever ran in between -
+    @ the photo album, the mailbox - may have taken these tiles and this palette
+    @ for itself. Cheaper and more reliable than trying to recognise every app
+    @ that might, and it costs one re-upload on the way back in.
+    ldr     r0, =list_hold
+    ldr     r0, [r0]
+    cmp     r0, #0
+    bne     37f
+    ldr     r0, =list_drawn
+    movs    r1, #0
+    str     r1, [r0]
+
+37: ldr     r0, =list_ctrl
     ldr     r4, [r0]
     cmp     r4, #0
     beq     29f                     @ no validated controller this frame
@@ -2526,10 +2698,13 @@ OneScreen_ListMenu:
     bne     23f
     ldr     r2, [sp, #20]
     ldrh    r3, [r2, #STRING_SIZE_OFF]
-    ldrb    r4, [r1, #LIST_M_KEY_LEN]
+    ldrb    r4, [r1, #LIST_M_KEY_FULL]
     cmp     r3, r4
     bne     23f
-    movs    r3, #0
+    cmp     r4, #LIST_KEY_MAX       @ only the first 16 are stored; the full
+    bls     24f                     @ length above has already been checked
+    movs    r4, #LIST_KEY_MAX
+24: movs    r3, #0
 21: cmp     r3, r4
     bhs     22f
     lsls    r5, r3, #1
@@ -2556,34 +2731,35 @@ OneScreen_ListMenu:
     b       28f
 
     @ Upload once per open: the frame tiles then this menu's strips.
+    @ Upload when the menu CHANGES, not merely once. A single flag meant that
+    @ stepping from the PC's list into its box menu kept the previous menu's
+    @ strips in VRAM and drew the new tilemap over them - garbled words, and the
+    @ old menu's at that.
 26: ldr     r0, =list_drawn
     ldr     r0, [r0]
-    cmp     r0, #0
-    bne     27f
-    ldr     r0, =OneScreen_Labels
+    ldr     r1, [sp, #16]
+    cmp     r0, r1
+    beq     27f
+    @ A DIFFERENT menu. Clear the last one's rectangle first: panels are not all
+    @ the same size, so stepping from the PC's box menu back to its list left the
+    @ taller panel's edges on screen with the smaller one drawn inside them.
+    bl      OneScreen_ListMenuWipe
+    ldr     r0, =OneScreen_Labels   @ the border, its own packed stream
     ldr     r1, [r7, #LIST_TILES_OFF]
-    adds    r1, r0, r1
-    ldr     r2, [r7, #LIST_TILES_DEST]
-    movs    r3, #LIST_FRAME_TILES
-    lsls    r3, r3, #5              @ tiles -> bytes; 288 is past a mov immediate
-30: ldmia   r1!, {r0}
-    stmia   r2!, {r0}
-    subs    r3, #4
-    bne     30b
-    ldr     r0, =OneScreen_Labels   @ then the strips, straight after the frame
+    adds    r0, r0, r1
+    ldr     r1, [r7, #LIST_TILES_DEST]
+    bl      OneScreen_Unpack
+    ldr     r0, =OneScreen_Labels   @ then this menu's strips, after the border
     ldr     r1, [r7, #LIST_TILES_OFF]
-    adds    r1, r0, r1
-    ldr     r0, [sp, #16]
-    ldrh    r3, [r0, #LIST_M_STRIP_OFF]
-    adds    r1, r1, r3
-    ldrh    r3, [r0, #LIST_M_STRIP_TILES]
-    ldrb    r0, [r0, #LIST_M_ENTRIES]
-    muls    r3, r0
-    lsls    r3, r3, #5              @ tiles -> bytes
-31: ldmia   r1!, {r0}
-    stmia   r2!, {r0}
-    subs    r3, #4
-    bne     31b
+    adds    r0, r0, r1
+    ldr     r1, [sp, #16]
+    ldrh    r1, [r1, #LIST_M_STRIP_OFF]
+    adds    r0, r0, r1
+    ldr     r1, [r7, #LIST_TILES_DEST]
+    movs    r2, #LIST_FRAME_TILES
+    lsls    r2, r2, #5
+    adds    r1, r1, r2
+    bl      OneScreen_Unpack
     ldr     r0, =OneScreen_Labels
     ldr     r1, [r7, #LIST_PAL_OFF]
     adds    r1, r0, r1
@@ -2594,13 +2770,21 @@ OneScreen_ListMenu:
     subs    r3, #4
     bne     32b
     ldr     r0, =list_drawn
-    movs    r1, #1
+    ldr     r1, [sp, #16]
     str     r1, [r0]
 
 27: ldr     r0, [sp, #16]
     ldr     r1, [sp, #8]
+    ldr     r2, [r7, #LIST_SCREEN_BASE]
     bl      OneScreen_ListDraw
-    movs    r0, #1
+    bl      OneScreen_MapBuffer     @ and into the game's own copy, so its next
+    cmp     r0, #0                  @ commit repaints the panel instead of
+    beq     36f                     @ erasing it
+    movs    r2, r0
+    ldr     r0, [sp, #16]
+    ldr     r1, [sp, #8]
+    bl      OneScreen_ListDraw
+36: movs    r0, #1
 28: add     sp, #24
     pop     {r4, r5, r6, r7, pc}
     .align  2
@@ -2614,9 +2798,10 @@ OneScreen_ListMenu:
     .thumb_func
 OneScreen_ListDraw:
     push    {r4, r5, r6, r7, lr}
-    sub     sp, #32
+    sub     sp, #40
     str     r0, [sp]
     str     r1, [sp, #4]
+    movs    r6, r2                  @ destination base
     ldr     r7, =OneScreen_Labels
     ldr     r2, =LIST_RECORD_OFF
     adds    r7, r7, r2
@@ -2625,21 +2810,24 @@ OneScreen_ListDraw:
     ldrb    r2, [r0, #LIST_M_CELL_H]
     str     r2, [sp, #12]
     ldrb    r2, [r0, #LIST_M_ENTRIES]
+    str     r2, [sp, #32]
+    ldrb    r2, [r0, #LIST_M_ROWS]  @ the PC box menu is a grid, not a column, so
+    ldr     r3, [sp, #12]           @ the panel is sized by rows and columns and
+    muls    r2, r3                  @ not by the entry count
+    adds    r2, #2                  @ frame_rows
     str     r2, [sp, #16]
-    ldr     r2, [sp, #8]
+    ldrb    r2, [r0, #LIST_M_COLS]
+    ldr     r3, [sp, #8]
+    muls    r2, r3
     adds    r2, #2                  @ frame_cols
     str     r2, [sp, #20]
     movs    r3, #32
     subs    r3, r3, r2              @ flush to the right edge
     str     r3, [sp, #24]
-    ldr     r2, [r7, #LIST_SCREEN_BASE]
-    str     r2, [sp, #28]
+    str     r6, [sp, #28]           @ where to paint: VRAM, or the game's buffer
 
     @ Remember the rectangle so the wipe can clear it without the record.
     ldr     r0, [sp, #16]
-    ldr     r1, [sp, #12]
-    muls    r0, r1
-    adds    r0, #2                  @ frame_rows
     lsls    r0, r0, #16
     ldr     r1, [sp, #20]
     lsls    r1, r1, #8
@@ -2651,9 +2839,6 @@ OneScreen_ListDraw:
 
     movs    r4, #0                  @ frame row
 40: ldr     r0, [sp, #16]
-    ldr     r1, [sp, #12]
-    muls    r0, r1
-    adds    r0, #2
     cmp     r4, r0
     bhs     45f
     cmp     r4, #0
@@ -2703,7 +2888,7 @@ OneScreen_ListDraw:
     b       40b
 
 45: movs    r4, #0                  @ entry
-50: ldr     r0, [sp, #16]
+50: ldr     r0, [sp, #32]
     cmp     r4, r0
     bhs     55f
     ldr     r0, [sp]
@@ -2723,17 +2908,28 @@ OneScreen_ListDraw:
 52: ldr     r1, [sp, #12]
     cmp     r5, r1
     bhs     54f
-    ldr     r1, [sp, #12]
-    muls    r1, r4
-    adds    r1, r1, r5
-    adds    r1, #1                  @ past the border's top row
-    lsls    r1, r1, #5
-    ldr     r2, [sp, #24]
+    ldr     r1, [sp]                @ this entry's (row << 4) | column
+    movs    r2, #LIST_M_POS
     adds    r1, r1, r2
-    adds    r1, #1                  @ and its left column
-    lsls    r1, r1, #1
-    ldr     r2, [sp, #28]
-    adds    r1, r2, r1
+    ldrb    r1, [r1, r4]
+    movs    r2, r1
+    lsrs    r2, r2, #4              @ row
+    ldr     r6, [sp, #12]
+    muls    r2, r6
+    adds    r2, r2, r5
+    adds    r2, #1                  @ past the border's top row
+    lsls    r2, r2, #5
+    movs    r6, #15
+    ands    r1, r6                  @ column
+    ldr     r6, [sp, #8]
+    muls    r1, r6
+    adds    r2, r2, r1
+    ldr     r1, [sp, #24]
+    adds    r2, r2, r1
+    adds    r2, #1                  @ and its left column
+    lsls    r2, r2, #1
+    ldr     r1, [sp, #28]
+    adds    r1, r1, r2
     ldr     r2, [sp, #8]            @ cell_w, counted down
 53: strh    r0, [r1]
     adds    r1, #2
@@ -2745,7 +2941,7 @@ OneScreen_ListDraw:
 54: adds    r4, #1
     b       50b
 
-55: add     sp, #32
+55: add     sp, #40
     pop     {r4, r5, r6, r7, pc}
     .align  2
     .pool
@@ -2757,6 +2953,7 @@ OneScreen_ListDraw:
     .thumb_func
 OneScreen_ListClear:
     push    {r4, r5, r6, r7, lr}
+    movs    r7, r0                  @ destination base
     ldr     r0, =list_rect
     ldr     r0, [r0]
     cmp     r0, #0
@@ -2768,10 +2965,6 @@ OneScreen_ListClear:
     ands    r5, r1                  @ cols
     lsrs    r6, r0, #16
     ands    r6, r1                  @ rows
-    ldr     r7, =OneScreen_Labels
-    ldr     r0, =LIST_RECORD_OFF
-    adds    r7, r7, r0
-    ldr     r7, [r7, #LIST_SCREEN_BASE]
     movs    r0, #0                  @ row
 17: cmp     r0, r6
     bhs     18f
@@ -2805,6 +2998,14 @@ OneScreen_ListMenuWipe:
     beq     19f
     movs    r1, #0
     str     r1, [r0]
+    ldr     r0, =OneScreen_Labels
+    ldr     r1, =LIST_RECORD_OFF
+    adds    r0, r0, r1
+    ldr     r0, [r0, #LIST_SCREEN_BASE]
+    bl      OneScreen_ListClear
+    bl      OneScreen_MapBuffer     @ clear the game's copy too, or its next
+    cmp     r0, #0                  @ commit puts the panel back
+    beq     19f
     bl      OneScreen_ListClear
 19: pop     {r4, pc}
     .align  2
@@ -3076,11 +3277,29 @@ OneScreen_ScriptMenu:
     bl      OneScreen_ListMenu
     cmp     r0, #0
     beq     55f
+    ldr     r1, =list_hold
+    movs    r0, #LIST_HOLD_FRAMES
+    str     r0, [r1]
     movs    r0, #0                  @ engine A: keep the world, panel drawn on it
     bl      OneScreen_SetSwap
     movs    r0, #1
     pop     {r3, r4, r5, pc}
-55: bl      OneScreen_ListMenuWipe
+
+    @ It did not confirm this frame. If a panel was up a moment ago, hold it
+    @ rather than tearing it down: the controller passes through states that fail
+    @ these checks while it reprints an option's description, and wiping on every
+    @ one of those made the whole panel blink as the cursor moved.
+55: ldr     r1, =list_hold
+    ldr     r0, [r1]
+    cmp     r0, #0
+    beq     51f
+    subs    r0, #1
+    str     r0, [r1]
+    movs    r0, #0
+    bl      OneScreen_SetSwap
+    movs    r0, #1
+    pop     {r3, r4, r5, pc}
+51: bl      OneScreen_ListMenuWipe
     movs    r0, #1
     bl      OneScreen_SetSwap       @ engine B: native list/fallback on upper LCD
     movs    r0, #1
@@ -3147,6 +3366,12 @@ OneScreen_Poll:
     @ strips will not have survived. Clearing the flag makes the next draw send
     @ them again rather than pointing the tilemap at whatever is there now.
     ldr     r0, =sm_drawn
+    movs    r1, #0
+    str     r1, [r0]
+    @ Same for a list menu's pool. Stepping into ALBUM PHOTO and back left the
+    @ tilemap pointing at tiles - and a palette - that application had since
+    @ reused, which drew the panel as a solid black box.
+    ldr     r0, =list_drawn
     movs    r1, #0
     str     r1, [r0]
     @ An app may reuse MAIN_3 immediately. Forget field labels without wiping

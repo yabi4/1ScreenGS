@@ -130,13 +130,25 @@ One difference from the touch screen: the trainer-card row reads `DRESSEUR` rath
 your name. The game fills that in at runtime from a placeholder, and the labels here are
 rasterised when you patch, long before there is a save file to read it from.
 
-**In a shop**, the clerk's `ACHETER / VENDRE / QUITTER` is drawn in the top-right corner
-instead of taking the screen. Picking `ACHETER` opens the item list on the top screen as
-before.
+**Shops and the PC** draw their menus in the top-right corner instead of taking the screen:
 
-Other list menus — NPC choices, the PC's own menus — still swap. The patch only draws a
-menu it recognises by name, so one it has never seen keeps the old behaviour rather than
-risking the wrong words on screen.
+| where | on top |
+|---|---|
+| a shop clerk | the shop, with `ACHETER / VENDRE / QUITTER` on it |
+| the PC, choosing which | `PC DE LEO / MON PC / PANTHEON / DECONNEXION` |
+| your own PC | `BOITE AUX LETTRES / CAPSULES BALL / ALBUM PHOTO / ETEINDRE` |
+| the storage system | `DEPOSER` / `RETIRER` / `DEPLACER POKéMON`, `DEPLACER OBJETS`, `SALUT!` |
+| you pick any of them | that screen, exactly as before |
+
+The storage menu is drawn as the 2×3 grid it actually is, two lines to an entry, so the
+D-pad moves through it the way it looks.
+
+`MON PC` is the one place the patch supplies a word of its own: the touch screen shows your
+name there, and the game only builds that at runtime, long after the labels are rasterised.
+
+Other list menus — NPC choices, the day-care, the Game Corner — still swap. The patch draws
+only menus it recognises, so one it has never seen keeps the old behaviour rather than
+risking the wrong words on screen. `docs/FINDINGS.md` lists the ones that could be added.
 
 **Starting a new game**, Oak's questions are answered on his own screen:
 

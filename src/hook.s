@@ -457,34 +457,41 @@ OAK_CONFIRM_NAME   = 98         @ CONFIRM_NAME_YESNO_HANDLE_INPUT
 @     62 WAIT_FADE_OUT_TO_ASK_GENDER .. 64 WAIT_FADE_IN_GENDER_SELECT_MENU
 @     66 PREPARE_ASK_CONFIRM_GENDER  .. 68 CONFIRM_GENDER_YESNO_INIT_MENU
 @     96 PROMPT_NAME_RESTORE_GRAPHICS .. 97 CONFIRM_NAME_YESNO_INIT_MENU
-OAK_GENDER_PRE_LO  = 62
+OAK_GENDER_PRE_LO  = 61
 OAK_GENDER_PRE_HI  = 64
 OAK_CONFIRM_PRE_LO = 66
 OAK_CONFIRM_PRE_HI = 68
 OAK_NAME_PRE_LO    = 96
 OAK_NAME_PRE_HI    = 97
 
-@ The "look at the bottom screen" prompt is not part of the dialog box at all -
-@ it is data->sprites[3], an object drawn above the background, which is why
-@ covering the box never hid it. The game shows it while Oak waits for you and
-@ hides it itself at SETUP_GENDER_SELECT_MENU; the old code swapped the screen
-@ away for those frames, so it was simply never seen. Now that Oak keeps the
-@ screen it is visible right up to the moment the prompt lands, and flashes.
+@ The small DS focus indicator is the {YESNO 0} text control, not a separate
+@ menu. RunTextPrinter consumes it from the print-task queue after this exec hook
+@ returns, so an extra blit here cannot win the ordering race. In only the three
+@ question states, OneScreen_OakSuppressFocus changes that live String's control
+@ id from 0x0200 to unused 0x0209 before the printer sees it. The normal generic
+@ control-code path then skips the same one argument without drawing the icon.
 @
-@ So it gets hidden a few states early. This is the only place the hook writes
-@ game state other than gSystem.screensFlipped, and it is about as narrow a write
-@ as exists: one byte that only affects whether an object is rendered. Safe
-@ against the game's own bookkeeping because GF_ASSERT compiles to nothing
-@ without PM_KEEP_ASSERTS, so the drawFlag checks around Sprite_SetDrawFlag
-@ generate no code in a retail build - the game simply sets it again later.
-@
-@ sprites[6] begins at +0xD8 (spriteRenderer +0xD0, spriteGfxHandler +0xD4), so
-@ sprites[3] is +0xE4, and Sprite.drawFlag is +0x34 - both from headers whose
-@ neighbouring fields are annotated with their own offsets.
+@ Oak's selected band uses palette index 12, unused by its native dialog text.
+@ While a prompt is live the draw copies Oak's own edition-specific backdrop
+@ colour (MAIN BG palette 1 index 1) there: blue/silver in SoulSilver, gold in
+@ HeartGold. Ordinary text remains on indices 1/2/15.
+OAK_THEME_SOURCE = 0x05000022
+OAK_THEME_DEST   = 0x050000D8
 
 OAK_STATE_OFF = 0x0C            @ OakSpeechData.state
 OAK_DATA_OFF = 0x08             @ manager->data, from &proc_state (+0x14)
 OAK_TUTORIAL_HI = 7             @ 0..7: the tutorial menu
+OAK_FOCUS_GENDER         = 61   @ ARE_YOU_A_GENDER
+OAK_FOCUS_CONFIRM_GENDER = 67   @ ASK_CONFIRM_GENDER
+OAK_FOCUS_CONFIRM_NAME   = 97   @ CONFIRM_NAME_YESNO_INIT_MENU
+OAK_PRINT_STATE_OFF = 0x104     @ OakSpeechData.printDialogMsgState
+OAK_STRING_OFF      = 0x110     @ OakSpeechData.string
+OAK_STRING_LAST_OFF = 0x808     @ String_New(0x400) allocation, conservatively
+OAK_STRING_MAX      = 0x400
+OAK_STRING_MAGIC    = 0xB6F8D2EC
+OAK_CONTROL_MARK    = 0xFFFE
+OAK_FOCUS_CONTROL   = 0x0200
+OAK_IGNORE_CONTROL  = 0x0209
 
 @ Field script menus - the PC option list, shop lists, NPC yes/no choices. All
 @ of these are drawn on the touch screen by the running script, inside the field
@@ -537,6 +544,27 @@ FIELD_CHILD_BINARY_DONE = 6
 FIELD_CHILD_LIST_LO   = 7
 FIELD_CHILD_STATE_HI  = 11
 
+@ Evolution's post-scene move-learning prompt. sub_02075A7C allocates a 0xBC-byte
+@ task data block and installs sub_02077270 as VBlank with that block as its
+@ callback argument (gSystem + 4). Its two-option controller is local ARM9 code,
+@ not overlay 27 or BattleInput. Both prompts share these fields and the same
+@ MAIN_1 27x4 dialog geometry as the battle Yes/No box.
+EVOLUTION_DATA_LAST_OFF = 0xB8
+EVOLUTION_BG_OFF        = 0x00
+EVOLUTION_WINDOW_OFF    = 0x04
+EVOLUTION_STATE_OFF     = 0x64
+EVOLUTION_SUBSTATE_OFF  = 0x8A
+EVOLUTION_CHOICE_OFF    = 0x8B
+EVOLUTION_WINDOW_LAST_OFF = 0x0C
+EVOLUTION_WINDOW_GEOM0  = 0x1B130201 @ bg 1, x 2, y 19, width 27
+EVOLUTION_WINDOW_GEOM1  = 0x001F0B04 @ height 4, palette 11, base tile 31
+EVOLUTION_FORGET_SETUP  = 20
+EVOLUTION_FORGET_INPUT  = 21
+EVOLUTION_GIVEUP_SETUP  = 34
+EVOLUTION_GIVEUP_INPUT  = 35
+EVOLUTION_STATE_HI      = 45
+EVOLUTION_TASK_ORIG     = 0x02075D09 @ sub_02075D08, Thumb
+
 
 @ --------------------------------------------------------------------------
 @ Data. ITCM is RAM, so all of this is writable at runtime.
@@ -544,7 +572,7 @@ FIELD_CHILD_STATE_HI  = 11
     .global OneScreen_Signature
 OneScreen_Signature:
     .ascii  "1SGS"
-    .word   0x00000018          @ payload version
+    .word   0x00000019          @ payload version
 
 @ Filled in by the patcher from the ROM being patched. Defaults are French, so
 @ an unconfigured payload still works there. Keep the field order in step with
@@ -583,13 +611,14 @@ bt_have_prev:   .word 0         @ 1 once bt_prev holds last frame's window
 bt_lock:        .word -1        @ image frozen at the moment A was pressed, -1 = free
 oak_drawn:      .word -1        @ prompt image in Oak's dialog box, -1 = none
 oak_data:       .word 0         @ diagnostics: OakSpeechData, its state,
-oak_state:      .word -1        @ sprites[3] and that sprite's drawFlag, so a
+oak_state:      .word -1
 
 dex_last:       .word -1        @ last Pokedex proc_state acted on
 dex_mode:       .word 0         @ 0 = grid/info side, 1 = the area map
 pc_frames:      .word 0         @ frames left to hold the PC box routing
 script_menu:    .word 0         @ 1 while we own routing for a field script menu
 field_yn_drawn: .word -1        @ field choice copied into MAIN_3, -1 = nothing
+evolution_drawn: .word -1       @ evolution Oui/Non copied into MAIN_1
 field_restore:  .word 0         @ frames left to force the world back on top
 map_frames:     .word 0         @ counts down once the fly map stops running
 map_pending:    .word 0         @ frames left waiting for the field to pick up
@@ -640,6 +669,7 @@ app_table:
     @ nowhere, so it simply keeps whatever routing it inherits. Coming from the
     @ bag that is the menu's, which put the narration on the bottom screen. It
     @ draws its Pokemon and text on engine A, so 0.
+evolution_app:
     .word   0x02077271, 0
 
     .word   0, 0
@@ -1652,14 +1682,258 @@ OneScreen_AppIntent:
     .pool
 
 @ ---------------------------------------------------------------------------
+@ Classify the post-evolution move-learning controller.
+@
+@ Returns 0 if this is not the verified evolution app or any pointer/geometry is
+@ wrong, 1/2 for Yes/No, and 3 for a valid evolution frame with no binary prompt.
+@ The native controller remains authoritative; this only mirrors its selection.
+@ ---------------------------------------------------------------------------
+    .thumb_func
+OneScreen_EvolutionChoice:
+    push    {r4, r5, r6, lr}
+    ldr     r4, =cfg_app_callback
+    ldr     r4, [r4]                @ &gSystem.vBlankIntr
+    ldr     r0, [r4]
+    ldr     r1, =evolution_app
+    ldr     r1, [r1]                @ patcher-validated callback, or zero
+    cmp     r0, r1
+    bne     .Levolution_invalid
+    cmp     r1, #0
+    beq     .Levolution_invalid
+
+    ldr     r4, [r4, #4]            @ gSystem.vBlankIntrArg -> EvolutionTaskData
+    movs    r0, r4
+    ldr     r1, =EVOLUTION_DATA_LAST_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     .Levolution_invalid
+
+    ldr     r5, [r4, #EVOLUTION_BG_OFF]
+    movs    r0, r5
+    movs    r1, #0
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     .Levolution_invalid
+    ldr     r6, [r4, #EVOLUTION_WINDOW_OFF]
+    movs    r0, r6
+    movs    r1, #EVOLUTION_WINDOW_LAST_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     .Levolution_invalid
+    ldr     r0, [r6]
+    cmp     r0, r5                  @ Window belongs to this BgConfig
+    bne     .Levolution_invalid
+    ldr     r0, [r6, #4]
+    ldr     r1, =EVOLUTION_WINDOW_GEOM0
+    cmp     r0, r1
+    bne     .Levolution_invalid
+    ldr     r0, [r6, #8]
+    ldr     r1, =EVOLUTION_WINDOW_GEOM1
+    cmp     r0, r1
+    bne     .Levolution_invalid
+    ldr     r0, [r6, #12]           @ pixel buffer must still be live as well
+    movs    r1, #0
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     .Levolution_invalid
+
+    movs    r1, #EVOLUTION_STATE_OFF
+    ldrb    r0, [r4, r1]
+    cmp     r0, #EVOLUTION_STATE_HI
+    bhi     .Levolution_invalid
+    cmp     r0, #EVOLUTION_FORGET_SETUP
+    beq     .Levolution_yes
+    cmp     r0, #EVOLUTION_GIVEUP_SETUP
+    beq     .Levolution_yes
+    cmp     r0, #EVOLUTION_FORGET_INPUT
+    beq     .Levolution_live
+    cmp     r0, #EVOLUTION_GIVEUP_INPUT
+    bne     .Levolution_idle
+
+.Levolution_live:
+    movs    r1, #EVOLUTION_SUBSTATE_OFF
+    ldrb    r0, [r4, r1]
+    cmp     r0, #1                  @ 0 input, 1 confirmation animation
+    bhi     .Levolution_invalid
+    movs    r1, #EVOLUTION_CHOICE_OFF
+    ldrb    r0, [r4, r1]
+    cmp     r0, #1
+    blo     .Levolution_invalid
+    cmp     r0, #2
+    bhi     .Levolution_invalid
+    b       .Levolution_return      @ native 1/2 already means Yes/No
+
+.Levolution_yes:
+    movs    r0, #1
+    b       .Levolution_return
+.Levolution_idle:
+    movs    r0, #3
+    b       .Levolution_return
+.Levolution_invalid:
+    movs    r0, #0
+.Levolution_return:
+    pop     {r4, r5, r6, pc}
+    .align  2
+    .pool
+
+@ Draw the compact localized Yes/No in the evolution dialog. Both the first
+@ keep/forget prompt and the later give-up/continue prompt use this controller
+@ and retain their original inputs.
+    .thumb_func
+OneScreen_EvolutionPrompt:
+    push    {r4, lr}
+    bl      OneScreen_EvolutionChoice
+    movs    r4, r0
+    cmp     r4, #0
+    beq     .Levolution_reset       @ never write VRAM through an invalid chain
+    cmp     r4, #3
+    beq     .Levolution_wipe
+
+    subs    r4, #1                  @ native 1/2 -> image index 0/1
+    movs    r0, r4
+    adds    r0, #(LABEL_GEO_YN << 4)
+    ldr     r1, =evolution_drawn
+    str     r0, [r1]
+    bl      OneScreen_BattleMenu    @ redraw after the evolution frame work
+    movs    r0, #0
+    bl      OneScreen_SetSwap       @ keep the question and labels on the top LCD
+    b       .Levolution_done
+
+.Levolution_wipe:
+    ldr     r4, =evolution_drawn
+    ldr     r0, [r4]
+    adds    r0, #1
+    beq     .Levolution_done        @ already absent
+    movs    r0, #0
+    mvns    r0, r0
+    str     r0, [r4]
+    movs    r0, #LABEL_GEO_YN
+    bl      OneScreen_BattleWipe
+    bl      OneScreen_BattleMenu    @ exact window was validated above
+    b       .Levolution_done
+
+.Levolution_reset:
+    ldr     r1, =evolution_drawn
+    movs    r0, #0
+    mvns    r0, r0
+    str     r0, [r1]                @ app left: no write into its successor's VRAM
+.Levolution_done:
+    pop     {r4, pc}
+    .align  2
+    .pool
+
+@ The patcher replaces sub_02075A7C's verified SysTask callback literal with
+@ this wrapper. Running after the real task makes the mirrored highlight track
+@ Up/Down/A/B in the same displayed frame and lets teardown wipe exactly once.
+    .global OneScreen_EvolutionTask
+    .thumb_func
+OneScreen_EvolutionTask:
+    push    {r3, r4, r5, lr}        @ keep SP 8-byte aligned across both calls
+    movs    r4, r0                  @ SysTask *
+    movs    r5, r1                  @ EvolutionTaskData *
+    ldr     r3, =EVOLUTION_TASK_ORIG
+    blx     r3
+    bl      OneScreen_EvolutionPrompt
+    movs    r0, r4                  @ preserve the callback ABI defensively
+    movs    r1, r5
+    pop     {r3, r4, r5, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
 @ int OneScreen_OakExec(OverlayManager *manager, int *proc_state)
 @ Oak's opening speech - see the OAK_ constants above for the state map.
 @ Runs the app first, then routes, so ours is the last word for the frame.
 @ ---------------------------------------------------------------------------
+@ void OneScreen_OakSuppressFocus(OakSpeechData *data)
+@
+@ Oak's prompt messages finish with {YESNO 0}. The extended 0x0200 control only
+@ draws the three-tile DS focus indicator; the actual custom menu and native
+@ input controller are separate. Replace that id in the live expanded String
+@ before the print-task queue can render it. Every pointer and String invariant
+@ is checked first, and the scan is bounded by String.size.
+    .thumb_func
+OneScreen_OakSuppressFocus:
+    push    {r3, r4, r5, r6, r7, lr} @ preserve 8-byte stack alignment for calls
+    movs    r4, r0
+    movs    r0, r4
+    ldr     r1, =OAK_STRING_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     .Loak_focus_done
+
+    ldr     r1, =OAK_PRINT_STATE_OFF
+    ldr     r0, [r4, r1]
+    cmp     r0, #1                  @ state 2 has already freed data->string
+    bne     .Loak_focus_done
+    ldr     r1, =OAK_STRING_OFF
+    ldr     r4, [r4, r1]
+    movs    r0, r4
+    ldr     r1, =OAK_STRING_LAST_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     .Loak_focus_done
+
+    ldrh    r0, [r4]
+    ldr     r1, =OAK_STRING_MAX
+    cmp     r0, r1
+    bne     .Loak_focus_done
+    ldrh    r5, [r4, #2]
+    cmp     r5, r1
+    bhs     .Loak_focus_done         @ size must leave room for EOS
+    ldr     r0, [r4, #4]
+    ldr     r1, =OAK_STRING_MAGIC
+    cmp     r0, r1
+    bne     .Loak_focus_done
+    cmp     r5, #4
+    blo     .Loak_focus_done
+
+    movs    r6, r4
+    adds    r6, #8                  @ String.data
+    ldr     r7, =OAK_CONTROL_MARK
+.Loak_focus_scan:
+    ldrh    r0, [r6]
+    cmp     r0, r7
+    bne     .Loak_focus_next
+    ldrh    r0, [r6, #2]
+    ldr     r1, =OAK_FOCUS_CONTROL
+    cmp     r0, r1
+    bne     .Loak_focus_next
+    ldrh    r0, [r6, #4]
+    cmp     r0, #1                  @ one control-code argument
+    bne     .Loak_focus_next
+    ldrh    r0, [r6, #6]
+    cmp     r0, #0                  @ focus target 0
+    bne     .Loak_focus_next
+    ldr     r0, =OAK_IGNORE_CONTROL
+    strh    r0, [r6, #2]            @ generic parser skips it, drawing nothing
+    b       .Loak_focus_done
+
+.Loak_focus_next:
+    adds    r6, #2
+    subs    r5, #1
+    cmp     r5, #4
+    bhs     .Loak_focus_scan
+.Loak_focus_done:
+    pop     {r3, r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ Put Oak's live edition backdrop colour into the otherwise-unused selected-band
+@ entry of the dialog palette. The source is gold in HG and blue/silver in SS.
+    .thumb_func
+OneScreen_OakTheme:
+    ldr     r0, =OAK_THEME_SOURCE
+    ldrh    r1, [r0]
+    ldr     r0, =OAK_THEME_DEST
+    strh    r1, [r0]
+    bx      lr
+    .align  2
+    .pool
+
 @ void OneScreen_OakDraw(int code) - put a prompt in Oak's dialog box, or pass a
-@ negative code to take it down. Redraws only on a change: Oak's text printer
-@ writes this window when the question appears and then leaves it alone, so
-@ unlike the battle box there is nothing here to fight for it every frame.
+@ negative code to take it down. Active prompts are redrawn every frame after
+@ Oak's own work so the custom labels remain authoritative in the shared window.
     .thumb_func
 OneScreen_OakDraw:
     push    {r4, lr}
@@ -1686,7 +1960,7 @@ OneScreen_OakDraw:
     .global OneScreen_OakExec
     .thumb_func
 OneScreen_OakExec:
-    push    {r4, r5, lr}
+    push    {r3, r4, r5, lr}        @ normal callback entry; keep calls 8-aligned
     movs    r4, r1                  @ &proc_state, to survive the call
     ldr     r3, =cfg_oak_exec_orig
     ldr     r3, [r3]
@@ -1701,6 +1975,29 @@ OneScreen_OakExec:
     ldr     r1, =oak_state
     str     r0, [r1]
 
+    @ Oak temporarily runs the naming overlay inside its own manager while its
+    @ data->state remains 96. Only touch Oak's VRAM when its own VBlank argument
+    @ proves the graphics have been restored.
+    ldr     r1, =cfg_app_callback
+    ldr     r1, [r1]
+    ldr     r1, [r1, #4]
+    cmp     r1, r4
+    bne     61f
+
+    @ The printer runs later in the main loop, so neutralize the focus-indicator
+    @ control while the freshly-created String is still live. Tutorial messages
+    @ use the same control but run in other states and remain completely native.
+    cmp     r0, #OAK_FOCUS_GENDER
+    beq     .Loak_suppress_focus
+    cmp     r0, #OAK_FOCUS_CONFIRM_GENDER
+    beq     .Loak_suppress_focus
+    cmp     r0, #OAK_FOCUS_CONFIRM_NAME
+    bne     .Loak_focus_checked
+.Loak_suppress_focus:
+    movs    r0, r4
+    bl      OneScreen_OakSuppressFocus
+.Loak_focus_checked:
+    ldr     r0, [r4, #OAK_STATE_OFF]
 
     @ The three prompts that take input get drawn on Oak's own screen instead of
     @ handing the screen over. Gender picks between two symbols, the two
@@ -1731,11 +2028,11 @@ OneScreen_OakExec:
     @ icon occupies. Text never reaches those three tiles - it would collide with
     @ the icon if it did - so this is safe even under Oak's longest lines, and it
     @ covers the case where the icon turns out to be tiles rather than an object.
-    push    {r0}
+    push    {r0, r2}
     movs    r0, #LABEL_GEO_OAK
     bl      OneScreen_BattleWipe
     bl      OneScreen_OakDraw
-    pop     {r0}
+    pop     {r0, r2}
 
     @ Then route.
     @
@@ -1751,7 +2048,7 @@ OneScreen_OakExec:
 60: movs    r0, #0                  @ everything else keeps Oak's own screen
 62: bl      OneScreen_SetSwap
 61: movs    r0, r5
-    pop     {r4, r5, pc}
+    pop     {r3, r4, r5, pc}
 
 73: movs    r0, #LABEL_GEO_GENDER
     b       75f
@@ -1761,12 +2058,13 @@ OneScreen_OakExec:
     movs    r0, #0                  @ Oak keeps the screen through the lead-in
     bl      OneScreen_SetSwap
     movs    r0, r5
-    pop     {r4, r5, pc}
+    pop     {r3, r4, r5, pc}
 
 64: movs    r0, #(LABEL_GEO_GENDER << 4)
     b       66f
 65: movs    r0, #(LABEL_GEO_OAK << 4)
-66: push    {r0}
+66: push    {r0, r2}
+    bl      OneScreen_OakTheme       @ palette is loaded by the real exec above
     ldr     r1, =OAK_NUMOPTS_OFF
     ldrb    r1, [r4, r1]
     cmp     r1, #2
@@ -1775,18 +2073,18 @@ OneScreen_OakExec:
     ldrb    r1, [r4, r1]
     cmp     r1, #1
     bhi     67f
-    pop     {r0}
+    pop     {r0, r2}
     adds    r0, r0, r1
     bl      OneScreen_OakDraw
     movs    r0, #0                  @ Oak keeps the screen
     bl      OneScreen_SetSwap
     movs    r0, r5
-    pop     {r4, r5, pc}
-67: pop     {r0}
+    pop     {r3, r4, r5, pc}
+67: pop     {r0, r2}
     movs    r0, #0
     bl      OneScreen_SetSwap
     movs    r0, r5
-    pop     {r4, r5, pc}
+    pop     {r3, r4, r5, pc}
     .align  2
     .pool
 
@@ -2156,8 +2454,11 @@ OneScreen_MainRamRange:
     ldr     r2, =0x02000000
     cmp     r0, r2
     blo     40f
-    adds    r1, r0, r1
     ldr     r2, =0x02400000
+    cmp     r0, r2
+    bhs     40f
+    adds    r1, r0, r1
+    bcs     40f                     @ reject 32-bit wraparound as well
     cmp     r1, r2
     bhs     40f
     movs    r0, #1

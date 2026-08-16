@@ -175,10 +175,12 @@ def patch(rom_bytes: bytes, log=print, auto_battle=True):
                 + ("verified" if ok else
                    "CODE DOES NOT MATCH - entry dropped, this app will not swap"))
         inject.patch_main_loop(arm9, meta["symbols"]["OneScreen_Frame"])
+        inject.patch_evolution_task(
+            arm9, meta["symbols"]["OneScreen_EvolutionTask"])
         arm9 = inject.add_autoload_block(arm9, payload, meta["load_addr"])
         log(f"  ITCM     : {len(payload)} bytes at {meta['load_addr']:#010x} "
             f"(payload v{meta['payload_version']}), main loop "
-            f"{inject.MAIN_LOOP_SITE:#010x} hooked")
+            f"{inject.MAIN_LOOP_SITE:#010x} and evolution task hooked")
         log(f"  Region   : data shifted {delta:+#x} from the French reference")
         for name in inject.CONFIG_FIELDS:
             log(f"             {name:<15} {values[name]:#010x}")

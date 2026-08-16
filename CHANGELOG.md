@@ -42,6 +42,23 @@ to the old screen swap instead of drawing or dereferencing arbitrary memory.
 The field prompt aliases the existing language-neutral battle yes/no tiles, so it adds a
 new layout without storing another copy of the images.
 
+### Post-evolution move questions stay beside the Pokémon
+
+The two-button screen shown after an evolution asks first whether to forget a move and,
+when necessary, whether to stop trying to teach it. Both questions now keep the evolution
+scene on top and draw the same localized `Oui / Non` or `Yes / No` labels in the existing
+dialogue window.
+
+This is not the field controller: it is an ARM9 state machine owned by the evolution task.
+The patch validates the active VBlank callback, its task-data argument, the `BgConfig`, the
+live `Window` and its exact 27×4 geometry before drawing. Setup defaults to Yes; active and
+confirmation frames mirror the native 1/2 selection. Any unexpected pointer, geometry,
+state or selection fails closed without writing VRAM.
+
+Up, Down, A and B remain entirely native, including B selecting and confirming No. The
+new layout aliases the battle yes/no geometry and image data, so no translated strings or
+tiles are duplicated.
+
 ### Oak's speech answers on his own screen
 
 The questions at the start of a new game no longer take the screen. **GARÇON / FILLE**
@@ -54,6 +71,16 @@ because they go through the generic multichoice handler on up and down.
 
 The words come from the ROM like the battle ones — `msg_0286` for boy and girl, `msg_0219`
 for Oak's own yes and no — so this stays language-neutral.
+
+The selected band is no longer neutral grey. While a question is active, palette index 12
+of Oak's dialogue borrows the intro's own edition colour: blue/silver in SoulSilver and
+gold in HeartGold. Normal text retains Oak's original ink, shadow and paper indices.
+
+The brief lower-screen indicator flash before each custom prompt is also fixed. Oak's
+messages contain a `{YESNO 0}` text control, and the asynchronous text printer used to
+render it after the hook's VRAM wipe. The hook now suppresses that exact control in Oak's
+validated live message string before it reaches the printer; tutorial text and other text
+controls are untouched.
 
 Only two swaps remain in the intro: the naming keyboard, which genuinely needs the touch
 screen, and the tutorial menu, whose three options of running text will not fit beside the
@@ -97,6 +124,8 @@ finished image per highlighted entry would have been 32 KB against 11 KB of free
   into the bag: it is frozen at the moment you press A.
 - Mashing A through the battle intro no longer pins the menu, because the game's menu id
   says no menu is open yet.
+- Oak's obsolete lower-screen focus indicator no longer flashes immediately before the
+  custom gender and confirmation choices.
 - **L + R** in battle holds until the menu you are on changes, rather than being undone
   on the next frame.
 
@@ -105,7 +134,7 @@ finished image per highlighted entry would have been 32 KB against 11 KB of free
 - Region-neutral like the rest: every address is derived from the ROM, and the struct
   offsets are code-derived so they do not move between regions. Verified against IPGF,
   IPKF and IPKE.
-- Payload grows from 1452 to 25300 bytes of the ~31 KB of free ITCM.
+- Payload grows from 1452 to 26248 bytes of the ~31 KB of free ITCM.
 - The X menu's panel sizes itself: the cell width comes from the widest translated label,
   so the French build is 18 tiles across and the English one 16, and the patcher refuses
   rather than clipping a language whose words do not fit.

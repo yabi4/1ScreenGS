@@ -110,10 +110,11 @@ YN_BASE_COL = 24
 #   palette    11                 12                 6
 #
 # Oak's char base is GX_BG_CHARBASE_0x18000 in src/oaks_speech.c's own BgTemplate.
-# Palette 6 has not been dumped, but the window is filled with 0xF
-# (FillWindowPixelRect(&data->dialogWindow, 0xF, ...)), which confirms paper 15,
-# and pret's sFontInfos fixes ink at 1 - so the prompt highlights by inverting
-# those two rather than guessing an accent colour.
+# The window is filled with 0xF (FillWindowPixelRect), and pret's sFontInfos
+# fixes ink/shadow at 1/2. Oak's native text therefore uses 1/2/15. Selected
+# bands use otherwise-unused index 12; the runtime hook fills that entry from
+# Oak's live edition palette (blue/silver in SS, gold in HG) and keeps white text
+# by applying the same selected-glyph inversion used before.
 # The battle message window's own base: GF_BG_LYR_MAIN_1 with charBase 1, and
 # engine A's DISPCNT character-base offset is 0 - both dumped live mid-battle.
 BATTLE_CHAR_BASE = 0x06004000
@@ -523,12 +524,11 @@ def _layout_row(font: Font, items, cell_w):
 def _render(font: Font, placed, selected, width=CELL_W, invert=False):
     """Return a `width` x CELL_H grid of palette indices.
 
-    `invert` highlights by swapping ink and paper instead of filling with
-    HILITE. The battle boxes know their palette has a usable accent at index 12
-    because it was dumped from a live battle; Oak's palette 6 has not been, so
-    its prompt uses only the two indices the font system guarantees everywhere.
+    `invert` makes selected ink white and suppresses its shadow. Every selected
+    band uses index 12: battle/field already load their accent there, while the
+    runtime Oak hook copies the edition-specific intro colour into palette 6/12.
     """
-    band = FG if invert else HILITE
+    band = HILITE
     sel_rect = placed[selected][3] if selected is not None else None
     canvas = [[PAPER] * width for _ in range(CELL_H)]
     if sel_rect is not None:

@@ -68,7 +68,7 @@ the screen back to the world by itself.
 | New game — Oak's speech | his text, with his questions answered beside it (below) |
 | Flying | the flight animation, from the moment you confirm the destination |
 | Dig, Escape Rope, Teleport | the world, not the menu you set off from |
-| Evolution, and any move it teaches | the Pokémon and the narration |
+| Evolution, and any move it teaches | the Pokémon, the narration and compact `Yes / No` choices |
 
 **In battle**, the scene stays up while you choose. The commands are drawn onto it:
 
@@ -97,6 +97,11 @@ dialogue. Use **Up / Down** to choose, **A** to confirm, or **B** to decline, ex
 the unpatched game. This applies to every field prompt that uses the same two-button
 controller. Longer choices — PC options, shops and multichoice questions — still swap to
 their full UI and are unchanged.
+
+**After an evolution**, the questions about forgetting a move and giving up on teaching
+it also stay beside the Pokémon. The small `Oui / Non` or `Yes / No` labels follow the
+native selection. Use **Up / Down**, **A** and **B** exactly as before; the game still owns
+the input and decides which branch to take.
 
 **The overworld menu** is drawn on the world rather than swapped in:
 
@@ -138,11 +143,10 @@ rasterised when you patch, long before there is a save file to read it from.
 
 The gender options sit side by side and the confirmations stack, because that is how the
 game reads them: the gender question moves on left and right, the confirmations on up and
-down. The highlight follows whichever the game's own cursor is on.
-
-One cosmetic wart: the small "look at the bottom screen" indicator can flicker for a frame
-or two just before a prompt appears. It is drawn by something that runs after this patch
-does; see `docs/FINDINGS.md` for what was ruled out.
+down. The highlight follows whichever the game's own cursor is on. Its selected band uses
+the intro's own blue/silver colour in SoulSilver and gold in HeartGold. The small "look at
+the bottom screen" indicator embedded in Oak's question text is suppressed, so it does not
+flash immediately before the custom choices appear.
 
 **L + R** still works during a battle. It holds until the menu you are on changes, so
 backing out of the move list hands control back to the patch.

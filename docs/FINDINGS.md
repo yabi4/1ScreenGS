@@ -1077,10 +1077,11 @@ Testing only 1 and 2 left the screens swapped with no labels after a trip into t
 ## Resolved dead end: a yes/no box for the field prompts
 
 The first attempt on `beta-ui` was **abandoned**. The goal was the battle treatment for
-the overworld's binary questions — the nurse's "heal your Pokémon?", forget-a-move and so
-on. Its negative results remain below because they ruled out several convincing but wrong
+the overworld's binary questions, beginning with the nurse's "heal your Pokémon?" offer.
+Its negative results remain below because they ruled out several convincing but wrong
 paths. The conclusion did not: the prompt has a shared controller, one level deeper than
-the `ov01` list-menu code that was searched first.
+the `ov01` list-menu code that was searched first. The superficially similar question
+after an evolution is a different ARM9 controller, documented in the next section.
 
 ### Resolution: mode 3 is a custom overlay-27 controller
 
@@ -1190,6 +1191,54 @@ one-connection-per-launch limit, no navigation timing, and the same query can be
 offline. Three offline queries against a pair of savestates produced more than six live
 runs did. `tools/savestate.py` is the tool; melonDS writes slots as `<rom>.ml1`, `.ml2`.
 
+## Post-evolution move-learning prompts
+
+The "forget a move?" screen looks like another green binary field prompt, but it is not
+owned by overlay 27. A French SoulSilver savestate taken on the first option gave a much
+cleaner root: `gSystem.vBlankIntr` was the Thumb callback at `0x02077271`, and its argument
+at `gSystem+4` was a `0xBC`-byte evolution task-data block at `0x022C0564`. This is the
+callback installed by `sub_02075A7C`; the corresponding two-option state machine is ARM9
+code.
+
+The controller fields in that block are:
+
+    +0x64  evolution state
+    +0x8A  prompt substate (0 input, 1 confirmation animation)
+    +0x8B  selection (1 Yes / forget, 2 No / keep)
+
+The captured fixture resolves to state 21, substate 0 and selection 1, matching the red
+"forget" choice in the screenshot. There are two copies of the same prompt flow:
+
+| state | role | mirrored choice |
+|---|---|---|
+| 20 | set up "forget a move?" | Yes |
+| 21 | input/confirmation for that question | live `+0x8B` |
+| 34 | set up "stop trying to teach it?" | Yes |
+| 35 | input/confirmation for that question | live `+0x8B` |
+
+The native handler remains authoritative. Up and Down change `+0x8B`, A confirms it, and
+B selects 2 and confirms No. The patch neither reads the keypad for this feature nor
+writes the result; it only turns the native 1/2 into the existing localized Yes/No image.
+
+**The window can be verified rather than assumed.** The task data points to its `BgConfig`
+at `+0x00` and to a live `Window` at `+0x04`. That window points back to the same
+`BgConfig`, has packed geometry `0x1B130201` (MAIN_1, x=2, y=19, width=27) and
+`0x001F0B04` (height=4, palette=11, base tile=31), and has a live pixel buffer at `+0x0C`.
+It is therefore exactly the same four-row tile rectangle as battle window 0. The prompt
+can alias both the battle Yes/No geometry and its localized image data, with no new image
+bytes.
+
+The runtime resolver requires the structurally resolved evolution callback to be active,
+range-checks the complete task-data block and every pointer, checks the window's `BgConfig`
+ownership and packed geometry words, and requires the state to remain in the known 0–45
+range. Only the four states above are treated as prompts, and their live choices must be
+1 or 2. A valid non-prompt evolution state wipes a previously drawn label once. Invalid
+or stale data resets the latch without touching VRAM, which matters when the VBlank owner
+changes to the next application.
+
+This is also why a script-level `GetMenuChoice` rewrite would not have helped this screen:
+the post-evolution move flow never uses that script command or overlay-27 controller.
+
 ## Drawing Oak's prompts
 
 The second thing this patch draws, and much cheaper than the first, for one reason:
@@ -1235,11 +1284,12 @@ differs:
 | base tile | 31 | `0x237` | `0x36D` |
 | palette | 11 | 12 | 6 |
 
-Oak's palette has not been dumped, so his prompts highlight by swapping ink and paper
-rather than guessing an accent index — the window is filled with `0xF`
-(`FillWindowPixelRect(&data->dialogWindow, 0xF, ...)`), which fixes paper at 15, and
-`sFontInfos` fixes ink at 1. The battle boxes use the salmon at index 12 because that
-palette *was* dumped.
+Oak's native dialog uses palette 6 indices 1, 2 and 15 for ink, shadow and paper; index 12
+is free for the custom selected band. Rather than hardcode an approximation, each active
+prompt copies Oak's own backdrop accent from main BG palette 1/index 1 (`0x05000022`) to
+dialog palette 6/index 12 (`0x050000D8`). The observed values are `0x71AA` in SoulSilver
+(blue/silver) and `0x1A18` in HeartGold (gold). Both colours already belong to the retail
+intro, and normal dialog text keeps its native palette entries.
 
 **The words are the game's own.** `msg_0286` entries 7 and 16, whose row ids in the decomp
 are literally `msg_0286_boy` and `msg_0286_girl`, and `msg_0219` entries 47 and 48 for
@@ -1258,20 +1308,21 @@ Two bugs worth remembering, both from the boxes being different widths:
 - Going from the gender prompt to the confirmation must clear the **wider** box, or the
   same leftovers appear.
 
-### Dead end: the flickering "look at the bottom screen" indicator
+### Resolved: the flickering "look at the bottom screen" indicator
 
-A small indicator flickers for a frame or two before Oak's prompts appear. Four attempts,
-none successful; written down so the next one starts further along.
+A small DS/focus indicator used to flicker for a frame or two before Oak's custom prompts
+appeared. The failed investigations are retained below because each ruled out a plausible
+fix and narrowed the eventual answer.
 
-It is **not** a regression in the drawing. The game shows that indicator while Oak waits
-for input and hides it itself at `SETUP_GENDER_SELECT_MENU`; the old code swapped the
-screen away for exactly those frames, so it was simply never seen.
+It was **not** a regression in the custom label drawing. Oak's question messages 37, 38,
+39, 41 and 42 end in `{YESNO 0}`. That text control is the old instruction to look at the
+lower screen; the previous full-screen swap merely hid it.
 
 What was ruled out, by measurement rather than argument:
 
-1. **It is tiles in the dialog box, so blitting over it will do.** The hook now holds the
-   box's own all-paper image over that corner on every non-prompt frame — confirmed live,
-   `oak_drawn` reads `0x22` — and the indicator still flickers.
+1. **It is tiles in the dialog box, so blitting over it will do.** At that stage the hook
+   held the box's own all-paper image over that corner on every non-prompt frame —
+   confirmed live, `oak_drawn` read `0x22` — and the indicator still flickered.
 2. **It is `data->sprites[3]`, the touch-to-advance object.** The decomp says that object
    lives in the corner and is shown and hidden around these states, so the hook cleared its
    `drawFlag` (`+0x34`, `sprites[3]` at `+0xE4`). A savestate showed **`oak_flag = 0`** —
@@ -1281,15 +1332,26 @@ What was ruled out, by measurement rather than argument:
 3. **The prompt states were too narrow.** Widened to cover the lead-in states, then to
    every state of the speech. No change.
 
-What is left: something draws it *after* this hook runs in the frame. The hook draws from
-the app's own exec trampoline, and a text-printer task that runs later would repaint over
-it; a blinking indicator repainted once per blink, against a wipe reapplied every frame,
-produces exactly the observed flicker rather than a steady icon. That also fits it being
-briefer before the confirmations than before the gender question.
+The missing piece was the text-printer order. `{YESNO 0}` is encoded in the live `String`
+as the four halfwords `[0xFFFE, 0x0200, 0x0001, 0x0000]`. `RunTextPrinter` processes the
+`0x0200` command in a task after `OneScreen_OakExec`, calls
+`RenderScreenFocusIndicatorTile`, then copies the whole window. A later redraw was
+therefore guaranteed to beat the earlier wipe on frames where the control ran.
 
-The next step, if anyone wants it, is a savestate taken **during** the flicker: reading the
-dialog box's tiles at that instant separates "drawn after us" from "drawn somewhere else
-entirely", which is the fork none of the four attempts resolved.
+The fix removes the cause instead of racing that queue. In Oak's three message-printing
+lead-ins (states 61, 67 and 97), while `printDialogMsgState` at `+0x104` is 1, the hook
+validates the live `String *` at `+0x110`: aligned and wholly in main RAM, maximum size
+`0x400`, current size below that maximum, and magic `0xB6F8D2EC`. It scans only the stated
+length for the exact four-halfword sequence above and changes command id `0x0200` to the
+unused `0x0209`. The generic parser skips that control safely, so no focus tile reaches
+the pixel buffer. Requiring Oak's own VBlank argument to match its data block keeps the
+write out of the nested naming application; restricting both state and exact sequence
+leaves the tutorial and every other text control alone.
+
+**Validation caveat.** The existing `beta-ui` savestate set has no frame from Oak's intro.
+The cause and fix are supported by the decompiled message/state flow, exact assembly and
+the main-loop task order, but the final absence of the flash still needs a fresh-start
+melonDS play-through on both editions.
 
 ## The overworld menu, drawn on the world
 

@@ -34,7 +34,7 @@ FIGHT / BAG / POKéMON / RUN without the patcher knowing which is which.
 | Name entry | the keyboard |
 | New game | Oak's speech, with his questions answered on his own screen |
 | Flying, Dig, Escape Rope | the animation, from the moment you confirm |
-| Evolution | the Pokémon, and any move it learns afterwards |
+| Evolution | the Pokémon, its move-learning text, and compact **Yes / No** choices |
 | **Battles** | the scene, with the commands drawn on it; the screen only moves once you choose |
 
 Battles are the interesting part. The scene never leaves the top screen while you are
@@ -54,6 +54,11 @@ move the game's own selection; A and B keep their normal meanings. Longer lists 
 the PC options, shops and multichoice questions still take the screen because they need
 the room.
 
+The move-learning questions after an evolution use a separate controller, but receive the
+same treatment. When the game asks whether to forget a move, or later whether to stop
+trying to teach it, the Pokémon remains visible and the existing localized **Yes / No**
+tiles mirror the game's own selection. The patch does not handle the buttons or result.
+
 The overworld menu works the same way: **X** draws it in the top-right corner of the world
 instead of taking the screen, laid out two columns by four because that is the grid the
 game's own cursor walks. Picking an entry opens it on the top screen exactly as before.
@@ -61,8 +66,10 @@ game's own cursor walks. Picking an entry opens it on the top screen exactly as 
 Starting a new game works the same way. **GARÇON / FILLE** for the gender question and
 **OUI / NON** for the confirmations are drawn beside Oak's text, so the screen stays on him
 throughout — it only changes for the naming keyboard, which genuinely needs the touch
-screen. The tutorial menu still swaps: three options of running text will not fit beside
-the question the way two words do.
+screen. The selected band uses Oak's own intro colour — blue/silver in SoulSilver and gold
+in HeartGold — and the obsolete lower-screen indicator is suppressed before it can flash.
+The tutorial menu still swaps: three options of running text will not fit beside the
+question the way two words do.
 
 **L + R** swaps the screens manually at any time, as an escape hatch.
 
@@ -113,13 +120,17 @@ Diamond/Pearl/Platinum are **not** supported — different code, different overl
 
 ## Status
 
-Everything below is behaviour that has been played through, not just implemented:
+The broad routes below were played through in earlier beta builds, not just implemented:
 the overworld and its menus, battles including sub-screens and the command-menu timing,
 the bag through every pocket, the party menu including reordering and summaries, the
 Pokédex with its area map, the PC boxes for Pokémon and items, the Pokégear's map, radio,
 phone and configuration, shops and NPC choice menus, flying, Dig and Escape Rope,
 evolution and the moves it teaches, and a new game from the title screen through Oak's
 speech to walking outdoors.
+
+The current compact field and post-evolution prompts were additionally exercised from
+melonDS savestates. The latest Oak focus-indicator and edition-colour refinements are
+code- and data-validated but still need a fresh-start visual pass on both editions.
 
 Notably that covers the bag, the party menu and the PC box, which are still raw assembly
 in the decompilation — nothing but play could have cleared them — and the Pokégear, which

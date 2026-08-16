@@ -11,7 +11,7 @@ patch.py              user-facing CLI
 onescreen/            the patcher itself - no devkitARM needed
   sites.py            finds and rewrites POWCNT1 display-routing sites
   table.py            which sites to flip, which to leave alone
-  inject.py           ITCM autoload block + main-loop hook
+  inject.py           ITCM autoload block + checked main/evolution task hooks
   rom.py              load / verify / patch / repack
   payload/            pre-assembled hook.bin + hook.json (generated)
 src/hook.s            the resident ARM/Thumb hook source
@@ -36,6 +36,11 @@ The hook does not hardcode the addresses it reads. `OneScreen_Config` at the top
 `src/hook.s` holds fourteen of them, and the patcher fills it in from the ROM being patched
 (`onescreen/regions.py` → `inject.fill_config`). The defaults compiled into the payload
 are the French values, so an unconfigured payload still works there.
+
+The resident code is entered from two verified ARM9 sites. The main-loop call at
+`0x02000DB0` drives global routing, while the callback literal at `0x02075D04` wraps the
+evolution SysTask so its mirrored Yes/No highlight is drawn after native input in the same
+frame. `inject.py` checks the displaced call/pointer before changing either one.
 
 **If you add or reorder a field, update `CONFIG_FIELDS` in `onescreen/inject.py` to
 match** — the two are positional and nothing checks them against each other.

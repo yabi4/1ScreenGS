@@ -91,6 +91,8 @@ def main():
     if not args.no_inject:
         payload, meta = load_payload()
         inject.patch_main_loop(arm9, meta["symbols"]["OneScreen_Frame"])
+        inject.patch_evolution_task(
+            arm9, meta["symbols"]["OneScreen_EvolutionTask"])
         arm9 = inject.add_autoload_block(arm9, payload, meta["load_addr"])
     rom.arm9 = bytes(arm9)
 

@@ -1074,20 +1074,82 @@ Testing only 1 and 2 left the screens swapped with no labels after a trip into t
   moment A is pressed and holding it across a submenu trip — which is also simply correct,
   since the game restores the cursor to that same choice.
 
-## Dead end: a yes/no box for the field prompts
+## Resolved dead end: a yes/no box for the field prompts
 
-Attempted on `beta-ui` and **abandoned**. The goal was the battle treatment for the
-overworld's binary questions — the nurse's "heal your Pokémon?", forget-a-move and so on.
-Recorded in full because the negative results are what cost the time.
+The first attempt on `beta-ui` was **abandoned**. The goal was the battle treatment for
+the overworld's binary questions — the nurse's "heal your Pokémon?", forget-a-move and so
+on. Its negative results remain below because they ruled out several convincing but wrong
+paths. The conclusion did not: the prompt has a shared controller, one level deeper than
+the `ov01` list-menu code that was searched first.
+
+### Resolution: mode 3 is a custom overlay-27 controller
+
+The nurse script is already readable in pret. `scr_seq_0003_002` prints a `msg_0040`
+message ending in `{YESNO 0}`, calls `TouchscreenMenuHide`, then reads
+`GetMenuChoice VAR_SPECIAL_RESULT`. `{YESNO}` itself is only the three-tile "look at the
+lower screen" indicator; it does not create the choice. `ScrCmd_GetMenuChoice` calls
+`ov01_021F6ABC(fieldSystem, 3, 3, &ctx->data[1])`, which asks bottom-screen mode 3 to enter
+state 3. `TouchscreenMenuHide` records that requested mode at `FieldSystem+0x1C`, and
+`TouchscreenMenuShow` eventually returns it to 0.
+
+Mode 3 is entry 3 in overlay 27's bottom-UI table. It is not `ListMenu2D` and not
+`yes_no_prompt.c`; it is a custom state machine reached through two `SysTask` objects:
+
+    FieldSystem + 0xD8       outer SysTask *
+      SysTask + 0x10         outer environment
+        +0x04                child SysTask *
+        +0x08                FieldSystem * back-reference
+          SysTask + 0x10     child controller
+            +0x00            state
+            +0x24            FieldSystem * back-reference
+            +0x394           binary selection (0 yes, 1 no)
+
+`SysTask.data` being at `+0x10` is confirmed by `include/sys_task.h` and `src/sys_task.c`.
+The controller's assembly divides cleanly into the two kinds of UI that earlier work had
+conflated:
+
+| state | behaviour | top-screen treatment |
+|---|---|---|
+| 0–2 | setup, idle and transition | keep the world |
+| 3 | initialise binary prompt, selection 0 | draw Yes selected |
+| 4 | handle binary input | draw the live selection |
+| 5 | confirm and return the result | hold the live selection |
+| 6 | tear down the binary prompt | wipe once; keep the world |
+| 7–10 | initialise, run and close a longer list | show the lower UI |
+| 11 | communication-club cleanup/abort | show the native lower UI |
+
+The native handler maps Up to 0, Down to 1, A to the current choice, and B to 1 followed
+by confirmation. The patch therefore never interprets input or writes the script result;
+it only mirrors the controller's selection into the rightmost three tiles of the existing
+27×4 field dialogue. Setup and teardown remain on the world so there is no one-frame
+screen flash, while the genuine list and external-cleanup states continue to use native
+routing.
+
+This chain is safe to follow only while the field app is running. Every pointer must be
+word-aligned and wholly inside main RAM, both `FieldSystem` back-references must match,
+the state must be 0–11, and a drawn selection must be 0 or 1. Any failed check means draw
+nothing and use the existing screen swap. That directly addresses both regressions from
+the first attempt: painting another app's VRAM and following a stale pointer into I/O.
+
+The useful sources are pret's `files/fielddata/script/scr_seq/scr_seq_0003.s`,
+`src/scrcmd_c.c`, `asm/overlay_01_021F6830.s`, `asm/overlay_27.s` and
+`include/sys_task.h`. The LLM-assisted
+[pokeheartgold-slop](https://github.com/antonsynd/pokeheartgold-slop) fork can help turn a
+narrow overlay-27 function into C if live behaviour ever disagrees with this reading, but
+it is a last-resort aid, not the authority: the matching retail assembly and savestate
+values must still win. The nurse speech itself needs no further decompilation.
+
+### What the first investigation ruled out
 
 **The value was lower than it looked.** When a script menu owns the bottom screen the
 patch already swaps it up, and the buttons read perfectly well there. The only gain would
 have been keeping the world visible. Worth remembering before anyone tries again.
 
-**There is no shared binary-choice system.** `ScrCmd_YesNo` builds a `ListMenu2D` on
-`GF_BG_LYR_MAIN_3` — already the main engine, so those prompts need no work at all. Oak's
-speech has its own (`OakSpeechYesNo_*`). The nurse's green two-button panel is a third
-thing, and it is not decompiled.
+**The original conclusion was that there was no shared binary-choice system.**
+`ScrCmd_YesNo` builds a `ListMenu2D` on `GF_BG_LYR_MAIN_3` — already the main engine, so
+those prompts need no work at all. Oak's speech has its own (`OakSpeechYesNo_*`). Those
+facts are true, but the conclusion was too broad: the nurse's green two-button panel is
+the shared custom controller in overlay 27 described above.
 
 What was disproved, in order:
 
@@ -1109,9 +1171,10 @@ What was disproved, in order:
    shipped briefly and is the reason to be careful: it fires on any scripted
    bottom-screen moment that is not a list, including simply switching on the PC.
 
-**What did work**, and is worth reusing: the shop's menu *is* a real `ov01` list menu —
+**What did work**, and was worth reusing: the shop's menu *is* a real `ov01` list menu —
 first word is the `FieldSystem`, item count 3 at `+0x9B` for Buy/Sell/Quit. So shops and
-multi-choice questions can be recognised reliably; it is the touch prompts that cannot.
+multi-choice questions can be recognised reliably. The binary touch prompts simply could
+not be recognised through those `ov01` list-menu paths.
 
 **Two regressions this caused**, both from drawing before the ground was measured:
 
@@ -1152,8 +1215,8 @@ the player cannot answer yet:
     +0x161 numOptions    +0x163 cursorPos
 
 That pairing — "how many options" and "which one is lit", reachable from a pointer the
-framework hands over every frame — is exactly what the field prompts never had, and is the
-whole reason this took an afternoon and that took days.
+framework hands over every frame — is exactly what the first field-prompt investigation
+had not yet located, and is the whole reason this took an afternoon and that took days.
 
 **The two questions read differently, and the layout has to match.**
 `OakSpeech_GenderSelectHandleInput` moves on `PAD_KEY_LEFT` and `PAD_KEY_RIGHT`; the

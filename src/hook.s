@@ -181,11 +181,12 @@ BATTLE_MENU_TWO_HI = 17
 @ and engine A's DISPCNT live mid-battle; Oak's comes from its own BgTemplate.
 LABEL_MAGIC  = 0x424C5331       @ "1SLB"
 
-@ The blob holds two sets of images with different geometry, each described by a
-@ 20-byte record at +8 and +28: data offset, bytes per image, bytes per tile row,
-@ image count, then a byte offset from the BG character base per tile row. The
-@ hook carries no dimensions of its own, so moving or resizing a box is a change
-@ to onescreen/labels.py alone.
+@ The blob holds image sets with geometry records at +8. Each 28-byte record is:
+@ data offset, bytes per image, bytes per tile row, image count, then four
+@ absolute destination addresses. More than one geometry can point at the same
+@ image data: the battle and field Oui/Non boxes use the same pixels at different
+@ MAIN-engine character addresses. The hook carries no dimensions of its own,
+@ so moving or resizing a box is a change to onescreen/labels.py alone.
 @
 @ An image is named by a single byte, (set << 4) | index, which is what bt_drawn
 @ and bt_lock hold. The last image of each set is all paper and takes that box
@@ -198,9 +199,11 @@ LABEL_GEO_OAK    = 2            @ Oak's yes/no, stacked - the generic multichoic
                                 @ handler moves on UP and DOWN
 LABEL_GEO_GENDER = 3            @ boy/girl, side by side - the gender handler moves
                                 @ on LEFT and RIGHT, so stacking implied wrong keys
+LABEL_GEO_FIELD  = 4            @ field-dialog Oui/Non; aliases LABEL_GEO_YN pixels
+LABEL_GEO_COUNT  = 5
 @ Reserved space for the label images; the patcher refuses rather than overrun it.
-@ Seven 14x4-tile 4bpp images plus a header is 12576 bytes, and the headroom is
-@ there so another prompt type does not mean re-picking the number.
+@ The five geometry records, start-menu record and four unique localized image
+@ sets fit here with headroom. The field geometry aliases the battle Yes/No set.
 LABEL_BLOB_SIZE = 22528         @ reserved; the patcher refuses rather than overrun it
 
 @ The main-loop call we displace: `bl 0x0200110C` at 0x02000DB0.
@@ -366,7 +369,7 @@ SM_NORMAL_BIT = 8               @ DISABLE_RETIRE; see OneScreen_StartMenu
 
 @ The panel's record in the label blob, and the offsets inside it. Written by
 @ onescreen/labels.py::_startmenu; the layout is documented there.
-SM_RECORD_OFF = 128
+SM_RECORD_OFF = 148
 SM_TILES_OFF = 0                @ u32 blob offset of the strip pool
 SM_TILES_BYTES = 4
 SM_TILES_DEST = 8
@@ -505,6 +508,34 @@ OAK_TUTORIAL_HI = 7             @ 0..7: the tutorial menu
 @ Tested non-zero rather than == 3: any non-default mode means a script has put
 @ something on the bottom screen that the player needs to see.
 FIELD_MENU_OFF = 0x1C
+@ Mode 3 is refined at runtime: binary states stay on the world, list states swap.
+FIELD_TOUCH_TASK_OFF = 0xD8     @ FieldSystem -> outer bottom-screen SysTask
+SYS_TASK_DATA_OFF = 0x10        @ SysTask.data
+
+@ The outer task owns transitions between bottom-screen modes. Its 16-byte data
+@ block is known from ov01_021F68DC/ov01_021F69C0.
+FIELD_OUTER_MODE_OFF  = 0x00
+FIELD_OUTER_STATE_OFF = 0x01
+FIELD_OUTER_NEXT_OFF  = 0x02
+FIELD_OUTER_CHILD_OFF = 0x04
+FIELD_OUTER_FS_OFF    = 0x08
+FIELD_OUTER_LAST_OFF  = 0x0C
+FIELD_OUTER_IDLE      = 1
+FIELD_OUTER_TRANS_LO  = 2
+FIELD_OUTER_TRANS_HI  = 7
+FIELD_TOUCH_MODE      = 3
+
+@ Mode 3 is overlay 27's green touch controller. GetMenuChoice selects state 3;
+@ MenuExec selects state 7. The live choice is a word, not the ListMenu2D field
+@ the abandoned experiment followed.
+FIELD_CHILD_STATE_OFF = 0x00
+FIELD_CHILD_FS_OFF    = 0x24
+FIELD_CHILD_CHOICE_OFF = 0x394
+FIELD_CHILD_BINARY_LO = 3
+FIELD_CHILD_BINARY_HI = 5
+FIELD_CHILD_BINARY_DONE = 6
+FIELD_CHILD_LIST_LO   = 7
+FIELD_CHILD_STATE_HI  = 11
 
 
 @ --------------------------------------------------------------------------
@@ -513,7 +544,7 @@ FIELD_MENU_OFF = 0x1C
     .global OneScreen_Signature
 OneScreen_Signature:
     .ascii  "1SGS"
-    .word   0x00000017          @ payload version
+    .word   0x00000018          @ payload version
 
 @ Filled in by the patcher from the ROM being patched. Defaults are French, so
 @ an unconfigured payload still works there. Keep the field order in step with
@@ -557,7 +588,8 @@ oak_state:      .word -1        @ sprites[3] and that sprite's drawFlag, so a
 dex_last:       .word -1        @ last Pokedex proc_state acted on
 dex_mode:       .word 0         @ 0 = grid/info side, 1 = the area map
 pc_frames:      .word 0         @ frames left to hold the PC box routing
-script_menu:    .word 0         @ 1 while WE swapped for a field script menu
+script_menu:    .word 0         @ 1 while we own routing for a field script menu
+field_yn_drawn: .word -1        @ field choice copied into MAIN_3, -1 = nothing
 field_restore:  .word 0         @ frames left to force the world back on top
 map_frames:     .word 0         @ counts down once the fly map stops running
 map_pending:    .word 0         @ frames left waiting for the field to pick up
@@ -1081,12 +1113,18 @@ OneScreen_BattleMenu:
     ldrb    r6, [r7, #4]            @ rows
 
     lsrs    r1, r0, #4              @ which set
+    ldrb    r2, [r7, #5]            @ number of geometry records
+    cmp     r1, r2
+    bhs     39f                     @ bad image code: stay inside the header
     movs    r2, #LABEL_GEO_SIZE
     muls    r1, r2
     adds    r1, #8
     adds    r1, r7, r1              @ -> its geometry record
     movs    r2, #15
     ands    r0, r2                  @ index within the set
+    ldrh    r2, [r1, #10]           @ images in this set, including its wipe
+    cmp     r0, r2
+    bhs     39f                     @ bad index: stay inside its image data
 
     ldr     r3, [r1, #4]            @ bytes per image
     muls    r3, r0
@@ -1120,6 +1158,9 @@ OneScreen_BattleMenu:
 OneScreen_BattleWipe:
     lsls    r3, r0, #4
     ldr     r1, =OneScreen_Labels
+    ldrb    r2, [r1, #5]
+    cmp     r0, r2
+    bhs     38f                     @ missing geometry: return an invalid code
     movs    r2, #LABEL_GEO_SIZE
     muls    r0, r2
     adds    r0, #8
@@ -1127,6 +1168,9 @@ OneScreen_BattleWipe:
     ldrh    r0, [r0, #10]           @ images in the set
     subs    r0, #1
     orrs    r0, r3
+    bx      lr
+38: movs    r0, #0
+    mvns    r0, r0                  @ blitter's set-count check rejects -1
     bx      lr
     .align  2
     .pool
@@ -2100,41 +2144,225 @@ OneScreen_StartMenuWipe:
     .align  2
     .pool
 
+@ int OneScreen_MainRamRange(void *ptr, u32 last_word_off)
+@ Accept only aligned pointers whose last word is still in the DS's 4 MB main
+@ RAM. Every link in the field-controller chain passes through here before it is
+@ read: a non-null stale pointer once reached the IPC FIFO and hung ARM9.
+    .thumb_func
+OneScreen_MainRamRange:
+    movs    r2, #3
+    tst     r0, r2
+    bne     40f
+    ldr     r2, =0x02000000
+    cmp     r0, r2
+    blo     40f
+    adds    r1, r0, r1
+    ldr     r2, =0x02400000
+    cmp     r1, r2
+    bhs     40f
+    movs    r0, #1
+    bx      lr
+40: movs    r0, #0
+    bx      lr
+    .align  2
+    .pool
+
+@ Classify the stable overlay-27 mode-3 controller behind FieldSystem.
+@   0 invalid (fail closed to the native lower screen)
+@   1 transition/setup/idle/binary teardown (keep the world)
+@   2 binary prompt, Yes selected
+@   3 binary prompt, No selected
+@   4 non-mirrored native states 7..11 (lists at 7..10; cleanup at 11)
+    .thumb_func
+OneScreen_FieldMode3:
+    push    {r3, r4, r5, r6, r7, lr}
+    movs    r4, r0                  @ FieldSystem
+
+    movs    r1, #FIELD_TOUCH_TASK_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     49f
+    movs    r0, #FIELD_TOUCH_TASK_OFF
+    ldr     r5, [r4, r0]
+    movs    r0, r5
+    movs    r1, #SYS_TASK_DATA_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     49f
+    ldr     r6, [r5, #SYS_TASK_DATA_OFF]
+    movs    r0, r6
+    movs    r1, #FIELD_OUTER_LAST_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     49f
+    ldr     r0, [r6, #FIELD_OUTER_FS_OFF]
+    cmp     r0, r4
+    bne     49f                     @ not this FieldSystem's manager
+
+    ldrb    r0, [r6, #FIELD_OUTER_STATE_OFF]
+    cmp     r0, #FIELD_OUTER_IDLE
+    beq     43f
+
+    @ While the outer manager changes modes, its child can still be the outgoing
+    @ task. Validate the transition but deliberately do not follow that pointer.
+    cmp     r0, #FIELD_OUTER_TRANS_LO
+    blo     49f
+    cmp     r0, #FIELD_OUTER_TRANS_HI
+    bhi     49f
+    ldrb    r0, [r6, #FIELD_OUTER_NEXT_OFF]
+    cmp     r0, #FIELD_TOUCH_MODE
+    bne     49f
+    movs    r0, #1
+    b       48f
+
+43: ldrb    r0, [r6, #FIELD_OUTER_MODE_OFF]
+    cmp     r0, #FIELD_TOUCH_MODE
+    bne     49f
+    ldr     r5, [r6, #FIELD_OUTER_CHILD_OFF]
+    movs    r0, r5
+    movs    r1, #SYS_TASK_DATA_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     49f
+    ldr     r7, [r5, #SYS_TASK_DATA_OFF]
+    movs    r0, r7
+    ldr     r1, =FIELD_CHILD_CHOICE_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     49f
+    ldr     r0, [r7, #FIELD_CHILD_FS_OFF]
+    cmp     r0, r4
+    bne     49f                     @ stale controller from another field
+
+    ldr     r5, [r7, #FIELD_CHILD_STATE_OFF]
+    cmp     r5, #FIELD_CHILD_STATE_HI
+    bhi     49f
+    cmp     r5, #FIELD_CHILD_LIST_LO
+    blo     44f
+    movs    r0, #4                  @ native list/cleanup state
+    b       48f
+44: cmp     r5, #FIELD_CHILD_BINARY_LO
+    blo     47f                     @ setup/idle
+    cmp     r5, #FIELD_CHILD_BINARY_DONE
+    beq     47f                     @ result delivered
+    cmp     r5, #FIELD_CHILD_BINARY_LO
+    bne     45f
+    movs    r0, #2                  @ state 3 initializes Yes
+    b       48f
+45: ldr     r1, =FIELD_CHILD_CHOICE_OFF
+    ldr     r0, [r7, r1]
+    cmp     r0, #1
+    bhi     49f
+    adds    r0, #2                  @ 0/1 -> Yes/No classification 2/3
+    b       48f
+47: movs    r0, #1
+48: pop     {r3, r4, r5, r6, r7, pc}
+49: movs    r0, #0
+    b       48b
+    .align  2
+    .pool
+
+@ Wipe the field labels once, and only while the field app still owns MAIN_3.
+@ `field_yn_drawn` is reset without a VRAM write on app exit below.
+    .thumb_func
+OneScreen_FieldYesNoWipe:
+    push    {r3, lr}
+    ldr     r1, =field_yn_drawn
+    ldr     r0, [r1]
+    adds    r0, #1
+    beq     51f                     @ already absent
+    movs    r0, #0
+    mvns    r0, r0
+    str     r0, [r1]
+    movs    r0, #LABEL_GEO_FIELD
+    bl      OneScreen_BattleWipe
+    bl      OneScreen_BattleMenu
+51: pop     {r3, pc}
+    .align  2
+    .pool
+
 @ ---------------------------------------------------------------------------
 @ int OneScreen_ScriptMenu(void)
-@ Returns 1 if a field script menu is up and we routed it to the top screen.
-@ Applied every frame while it is up, because the field redraws underneath it.
+@ Route field-owned lower modes. Binary mode-3 prompts are mirrored into the
+@ world's MAIN_3 dialog; real lists and every other mode retain native routing.
 @ ---------------------------------------------------------------------------
     .global OneScreen_ScriptMenu
     .thumb_func
 OneScreen_ScriptMenu:
-    push    {r4, lr}
+    push    {r3, r4, r5, lr}
     ldr     r0, =cfg_field_sys
     ldr     r0, [r0]
     cmp     r0, #0
-    beq     44f
-    ldr     r0, [r0]                @ sFieldSysPtr
+    beq     59f
+    ldr     r4, [r0]                @ FieldSystem through sFieldSysPtr
+    cmp     r4, #0
+    beq     59f                     @ no field system yet (boot, menus)
+    movs    r0, r4
+    movs    r1, #FIELD_TOUCH_TASK_OFF
+    bl      OneScreen_MainRamRange
     cmp     r0, #0
-    beq     44f                     @ no field system yet (boot, menus)
-    ldr     r0, [r0, #FIELD_MENU_OFF]
-    ldr     r4, =script_menu
-    cmp     r0, #0
-    beq     42f
+    beq     59f                     @ do not dereference a stale FieldSystem
+    ldr     r5, [r4, #FIELD_MENU_OFF]
+    cmp     r5, #0
+    beq     57f
+    cmp     r5, #FIELD_TOUCH_MODE
+    bne     56f                     @ other field modes show their native UI
 
-    movs    r0, #1                  @ a script menu is up -> bottom screen on top
-    str     r0, [r4]
+    movs    r0, r4
+    bl      OneScreen_FieldMode3
+    movs    r5, r0
+    cmp     r5, #0
+    beq     56f                     @ invalid chain: fail closed
+    cmp     r5, #4
+    beq     56f                     @ native list/cleanup state
+    cmp     r5, #1
+    beq     53f                     @ transition/setup/teardown
+
+    @ Binary selection 2/3 -> image index 0/1. A missing or old blob also fails
+    @ closed, so an unrenderable prompt always leaves the native choices visible.
+    ldr     r0, =OneScreen_Labels
+    ldr     r1, [r0]
+    ldr     r2, =LABEL_MAGIC
+    cmp     r1, r2
+    bne     56f
+    ldrb    r1, [r0, #5]
+    cmp     r1, #LABEL_GEO_COUNT
+    blo     56f
+    subs    r5, #2
+    ldr     r1, =field_yn_drawn
+    str     r5, [r1]
+    movs    r0, r5
+    adds    r0, #(LABEL_GEO_FIELD << 4)
+    bl      OneScreen_BattleMenu    @ redraw after the game's message work
+    b       54f
+
+53: bl      OneScreen_FieldYesNoWipe
+54: ldr     r1, =script_menu
+    movs    r0, #1
+    str     r0, [r1]
+    movs    r0, #0                  @ engine A: world + dialog on upper LCD
     bl      OneScreen_SetSwap
     movs    r0, #1
-    pop     {r4, pc}
+    pop     {r3, r4, r5, pc}
 
-42: ldr     r0, [r4]
+56: bl      OneScreen_FieldYesNoWipe
+    ldr     r1, =script_menu
+    movs    r0, #1
+    str     r0, [r1]
+    bl      OneScreen_SetSwap       @ engine B: native list/fallback on upper LCD
+    movs    r0, #1
+    pop     {r3, r4, r5, pc}
+
+57: bl      OneScreen_FieldYesNoWipe
+    ldr     r4, =script_menu
+    ldr     r0, [r4]
     cmp     r0, #0
-    beq     44f                     @ it was never ours
-    movs    r0, #0                  @ the menu closed: put the world back
+    beq     59f                     @ it was never ours
+    movs    r0, #0                  @ menu closed: put the world back
     str     r0, [r4]
     bl      OneScreen_SetSwap
-44: movs    r0, #0
-    pop     {r4, pc}
+59: movs    r0, #0
+    pop     {r3, r4, r5, pc}
     .align  2
     .pool
 
@@ -2186,6 +2414,12 @@ OneScreen_Poll:
     @ them again rather than pointing the tilemap at whatever is there now.
     ldr     r0, =sm_drawn
     movs    r1, #0
+    str     r1, [r0]
+    @ An app may reuse MAIN_3 immediately. Forget field labels without wiping
+    @ here; the field-only path above is the sole safe place to touch that VRAM.
+    ldr     r0, =field_yn_drawn
+    movs    r1, #0
+    mvns    r1, r1
     str     r1, [r0]
     ldr     r0, =cfg_app_callback
     ldr     r0, [r0]
@@ -2336,10 +2570,9 @@ OneScreen_Frame:
 @ time by onescreen/labels.py and written in here by inject.fill_labels. Kept
 @ last in the payload so adding to it never moves any code.
 @
-@ Five 14x4-tile images at 4bpp - one per command highlighted, plus an all-paper
-@ one to take the menu down - behind a 32-byte header holding the row count, the
-@ image count, the bytes per tile row and per image, and the byte offset from the
-@ BG character base to each tile row. The hook reads that geometry rather than
+@ A 272-byte header holds five geometry records plus the start-menu record. Four
+@ unique localized 4bpp image sets follow it; the field-dialog geometry aliases
+@ the battle Yes/No pixels. The hook reads the recorded geometry rather than
 @ repeating it, so the layout cannot drift away from the rasteriser's.
 @
 @ An unfilled blob reads as zeroes, whose magic does not match, and

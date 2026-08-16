@@ -2,8 +2,8 @@
 
 ## Unreleased — `beta-ui`
 
-Going deeper into single-screen play than rerouting alone allows: the two places that
-asked you a question on the other screen now ask it on the one you are looking at.
+Going deeper into single-screen play than rerouting alone allows: compact choices now
+appear beside the question instead of taking the other screen.
 
 ### The battle command menu is drawn on the battle scene
 
@@ -25,6 +25,22 @@ Pulled out of the ROM being patched and rasterised at patch time
 A French build says ATTAQUE / SAC / POKéMON / FUITE, an English one FIGHT / BAG / POKéMON
 / RUN, from the same code. At runtime the hook only copies finished tiles into VRAM the
 game has already allocated: no font, no heap, no call into game code.
+
+### Field yes/no questions stay on the world
+
+Nurse Joy's offer, and every other field script that uses the shared green two-button
+controller, now keeps the overworld on the top screen. `Oui / Non` or `Yes / No` appears
+in the right-hand end of the existing dialogue window and follows the game's live
+selection; the game still owns Up, Down, A, B and the result passed back to the script.
+
+This controller also owns longer lists. Only its binary states are drawn: setup and
+teardown keep the world visible, while PC options, shops and multichoice states still
+raise their full lower-screen UI. Every pointer in the controller chain is range-checked
+and verified through two `FieldSystem` back-references; an unexpected layout falls back
+to the old screen swap instead of drawing or dereferencing arbitrary memory.
+
+The field prompt aliases the existing language-neutral battle yes/no tiles, so it adds a
+new layout without storing another copy of the images.
 
 ### Oak's speech answers on his own screen
 
@@ -93,8 +109,9 @@ finished image per highlighted entry would have been 32 KB against 11 KB of free
 - The X menu's panel sizes itself: the cell width comes from the widest translated label,
   so the French build is 18 tiles across and the English one 16, and the patcher refuses
   rather than clipping a language whose words do not fit.
-- A field yes/no for the overworld's prompts was attempted and abandoned — see
-  `docs/FINDINGS.md` for what was disproved and why.
+- The earlier field yes/no attempt followed `ListMenu2D` and was abandoned. Tracing
+  `GetMenuChoice` into overlay 27 exposed the real custom controller; the failed paths and
+  the resolution are both preserved in `docs/FINDINGS.md`.
 
 ## v0.1b — first public release
 

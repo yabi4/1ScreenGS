@@ -117,6 +117,8 @@ YN_BASE_COL = 24
 # The battle message window's own base: GF_BG_LYR_MAIN_1 with charBase 1, and
 # engine A's DISPCNT character-base offset is 0 - both dumped live mid-battle.
 BATTLE_CHAR_BASE = 0x06004000
+FIELD_CHAR_BASE = 0x06008000
+FIELD_BASE_TILE = 0x237
 OAK_CHAR_BASE = 0x06018000
 OAK_BASE_TILE = 0x36D
 
@@ -259,13 +261,16 @@ YN_CELL_W = YN_COLS * 8         # 24 px
 
 BLOB_MAGIC = b"1SLB"
 
-# Two sets of images, each with its own geometry, described by a 20-byte record
-# in the blob header so the hook carries no dimensions of its own:
+# Four unique sets of images, referenced by five geometry records in the blob
+# header so the hook carries no dimensions of its own:
 #
 #   set 0, 14 tiles wide   0..3 the root command menu, one per command
 #                          4    all paper, to take the menu down
 #   set 1, 3 tiles wide    0,1  the two-option prompt, top and bottom
 #                          2    all paper
+#
+# The battle and field yes/no geometries both reference set 1. Their tile data
+# is identical, but their rows live in different MAIN BG character bases.
 #
 # The wipe is the last image of each set rather than a special case, so taking a
 # menu down is the same code path as putting one up - and each set wipes only its
@@ -291,11 +296,12 @@ def _row_addrs(char_base, base_tile, base_col):
 OAK_IMAGES = 3                  # yes/no pair, wipe
 GENDER_IMAGES = 3               # the two options, wipe
 GEO_RECORD = 28                 # data_off, image_bytes, row_bytes, images, 4 row addrs
-BLOB_HEADER = 256               # magic, rows, four geometry records, start menu
+GEO_COUNT = 5                   # command, battle yes/no, Oak, gender, field yes/no
+BLOB_HEADER = 272               # magic, five geometry records, start menu
 
 # The start menu's record does not fit the shape above - it describes a pool of
 # tiles and a tilemap rather than finished images - so it gets its own block at a
-# fixed offset, clear of the four 28-byte records that end at 120.
+# fixed offset, immediately after the five 28-byte records that end at 148.
 #
 #   +0x00 u32  tiles_off        blob offset of the strip pool
 #   +0x04 u32  tiles_bytes
@@ -318,7 +324,7 @@ BLOB_HEADER = 256               # magic, rows, four geometry records, start menu
 #   +0x74 u32  frame_base        tilemap address of the border's top-left cell
 #   +0x78 u8   frame_rows
 #   +0x79 u8   frame_cols
-SM_RECORD_OFF = 128
+SM_RECORD_OFF = 148
 SM_RECORD_SIZE = 0x7C
 CMD_ROW_BYTES = GRID_COLS * 32
 CMD_IMAGE_BYTES = CMD_ROW_BYTES * GRID_ROWS
@@ -788,28 +794,50 @@ def build(rom, log=print) -> bytes:
         raise LabelError(f"{FONT_NARC} has no file {FONT_FILE}")
     font = Font(fonts[FONT_FILE])
 
-    # Each set: its layout, how many highlighted variants, pixel width, tile
-    # width, and where its rows land. Kept as one table so the header, the image
-    # data and the sizes cannot describe different things.
+    # Each image set: its layout, how many highlighted variants, pixel width and
+    # tile width. A geometry then pairs one of those sets with its destination
+    # rows. Keeping those concepts separate lets the field yes/no geometry alias
+    # the battle yes/no images without copying them into the blob a second time.
     sets = [
-        (_layout(font, labels), 4, CELL_W, GRID_COLS, False,
-         _row_addrs(BATTLE_CHAR_BASE, WIN_BASE_TILE, GRID_BASE_COL)),
-        (_layout_yesno(font, choices), 2, YN_CELL_W, YN_COLS, False,
-         _row_addrs(BATTLE_CHAR_BASE, WIN_BASE_TILE, YN_BASE_COL)),
-        (_layout_yesno(font, oak), 2, YN_CELL_W, YN_COLS, True,
-         _row_addrs(OAK_CHAR_BASE, OAK_BASE_TILE, YN_BASE_COL)),
+        (_layout(font, labels), 4, CELL_W, GRID_COLS, False),
+        (_layout_yesno(font, choices), 2, YN_CELL_W, YN_COLS, False),
+        (_layout_yesno(font, oak), 2, YN_CELL_W, YN_COLS, True),
         (_layout_row(font, gender, GENDER_CELL_W), 2, GENDER_CELL_W, GENDER_COLS,
-         True, _row_addrs(OAK_CHAR_BASE, OAK_BASE_TILE, GENDER_BASE_COL)),
+         True),
     ]
 
-    blob = bytearray(struct.pack("<4sBBH", BLOB_MAGIC, GRID_ROWS, len(sets), 0))
+    geometries = [
+        (0, _row_addrs(BATTLE_CHAR_BASE, WIN_BASE_TILE, GRID_BASE_COL)),
+        (1, _row_addrs(BATTLE_CHAR_BASE, WIN_BASE_TILE, YN_BASE_COL)),
+        (2, _row_addrs(OAK_CHAR_BASE, OAK_BASE_TILE, YN_BASE_COL)),
+        (3, _row_addrs(OAK_CHAR_BASE, OAK_BASE_TILE, GENDER_BASE_COL)),
+        (1, _row_addrs(FIELD_CHAR_BASE, FIELD_BASE_TILE, YN_BASE_COL)),
+    ]
+    if len(geometries) != GEO_COUNT:
+        raise LabelError(
+            f"there are {len(geometries)} geometries, expected {GEO_COUNT}")
+
+    # Allocate offsets only for unique image sets. Geometry 4 deliberately gets
+    # the same offset as geometry 1, while retaining its own destination rows.
     off = BLOB_HEADER
-    for _placed, variants, _w, cols, _inv, addrs in sets:
+    set_offsets = []
+    for _placed, variants, _w, cols, _inv in sets:
         row_bytes = cols * 32
         image_bytes = row_bytes * GRID_ROWS
-        blob += struct.pack("<IIHH", off, image_bytes, row_bytes, variants + 1)
-        blob += struct.pack(f"<{GRID_ROWS}I", *addrs)
+        set_offsets.append(off)
         off += (variants + 1) * image_bytes
+
+    blob = bytearray(struct.pack("<4sBBH", BLOB_MAGIC, GRID_ROWS,
+                                 len(geometries), 0))
+    for set_id, addrs in geometries:
+        if not 0 <= set_id < len(sets):
+            raise LabelError(f"geometry references missing image set {set_id}")
+        _placed, variants, _width, cols, _invert = sets[set_id]
+        row_bytes = cols * 32
+        image_bytes = row_bytes * GRID_ROWS
+        blob += struct.pack("<IIHH", set_offsets[set_id], image_bytes,
+                            row_bytes, variants + 1)
+        blob += struct.pack(f"<{GRID_ROWS}I", *addrs)
     if len(blob) > SM_RECORD_OFF:
         raise LabelError(f"the geometry records reach {len(blob)}, over the start "
                          f"menu record at {SM_RECORD_OFF}")
@@ -823,7 +851,7 @@ def build(rom, log=print) -> bytes:
     if len(blob) != BLOB_HEADER:
         raise LabelError(f"header is {len(blob)} bytes, expected {BLOB_HEADER}")
 
-    for placed_set, variants, width, cols, invert, _addrs in sets:
+    for placed_set, variants, width, cols, invert in sets:
         for sel in range(variants):
             blob += _to_tiles(
                 _render(font, placed_set, sel, width, invert), cols)
@@ -836,7 +864,8 @@ def build(rom, log=print) -> bytes:
     fmt = lambda xs: [_text_width(font, c) for c in xs]
     sm_labels = _startmenu_labels(archive)
     log(f"  Labels   : commands {fmt(labels)} px, battle yes/no {fmt(choices)} px, "
-        f"Oak yes/no {fmt(oak)} px, gender {fmt(gender)} px, {len(blob)} bytes")
+        f"field alias, Oak yes/no {fmt(oak)} px, gender {fmt(gender)} px, "
+        f"{len(blob)} bytes")
     log(f"  X menu   : {len(sm_labels)} labels, widest "
         f"{max(_text_width(font, c) for _a, c in sm_labels)} px, "
         f"{_startmenu_cell_w(font, sm_labels)}x{SM_CELL_H} tile cells")

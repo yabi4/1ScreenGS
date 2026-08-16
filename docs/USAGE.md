@@ -61,7 +61,8 @@ the screen back to the world by itself.
 | Pokédex — species grid | the grid |
 | Pokédex — a Pokémon's detail level | **the area map** |
 | PC box | the option list **and** the box itself — Pokémon and item storage |
-| Field menus | shop lists, NPC choices, anything a script puts on the touch screen |
+| Field binary questions | the world, with `Yes / No` or `Oui / Non` beside the question |
+| Field lists | shop lists, PC options and longer NPC choices — their UI |
 | Pokégear, main menu, trainer card, options | their UI |
 | Name entry | the keyboard |
 | New game — Oak's speech | his text, with his questions answered beside it (below) |
@@ -89,6 +90,13 @@ exactly; it starts on `ATTAQUE` because the game's cursor does.
 There is no timing anywhere in this. Nothing steps aside after a delay, and no press
 moves the screen out from under you — the screen changes when, and only when, you have
 picked something the game draws on the touch screen.
+
+**Binary questions in the overworld** stay on the world too. When Nurse Joy asks whether
+to heal your Pokémon, `Oui / Non` or `Yes / No` appears at the right-hand end of her
+dialogue. Use **Up / Down** to choose, **A** to confirm, or **B** to decline, exactly as in
+the unpatched game. This applies to every field prompt that uses the same two-button
+controller. Longer choices — PC options, shops and multichoice questions — still swap to
+their full UI and are unchanged.
 
 **The overworld menu** is drawn on the world rather than swapped in:
 

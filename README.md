@@ -15,12 +15,12 @@ Mostly this is rerouting, not redrawing. The DS has two independent 2D engines, 
 the game sets that, and adds a small resident hook for the cases that need to change while
 you play.
 
-The exceptions are the battle command menu, the questions Oak asks at the start of a new
-game, and the overworld menu, which are drawn onto the scene rather than swapped in. Even
-there nothing is replaced: the labels are the game's own words in
-the game's own font, pulled out of the ROM you supply and rasterised at patch time, so a
-French build says ATTAQUE / SAC / POKéMON / FUITE and an English one FIGHT / BAG / POKéMON
-/ RUN without the patcher knowing which is which.
+The exceptions are the battle command menu, binary questions in the overworld, the
+questions Oak asks at the start of a new game, and the overworld menu. They are drawn onto
+the scene rather than swapped in. Even there nothing is replaced: the labels are the
+game's own words in the game's own font, pulled out of the ROM you supply and rasterised
+at patch time, so a French build says ATTAQUE / SAC / POKéMON / FUITE and an English one
+FIGHT / BAG / POKéMON / RUN without the patcher knowing which is which.
 
 |  | on the top screen |
 |---|---|
@@ -28,7 +28,8 @@ French build says ATTAQUE / SAC / POKéMON / FUITE and an English one FIGHT / BA
 | Bag, party, Pokégear, main menu, trainer card, options | their UI |
 | Pokédex | the species grid, and the **area map** on a Pokémon's detail level |
 | PC box | the option list and the box — moving Pokémon, item storage |
-| Field menus | shop lists, NPC choices — anything a script draws below |
+| Field binary questions | the world, with **Yes / No** drawn in the dialogue window |
+| Field lists | shop lists and longer NPC choices — their UI |
 | Overworld menu (**X**) | the world, with the menu **drawn on it**; **B** closes it |
 | Name entry | the keyboard |
 | New game | Oak's speech, with his questions answered on his own screen |
@@ -45,6 +46,13 @@ get a small **Oui / Non** box in the same message window instead of taking the s
 
 Nothing is timed: there is no delay to wait through and no press that moves the screen
 out from under you.
+
+Binary questions in the overworld work the same way. Nurse Joy's offer, and every other
+field prompt that uses the shared two-button controller, keeps the world visible and puts
+**Yes / No** or **Oui / Non** in the right-hand end of the dialogue window. Up and down
+move the game's own selection; A and B keep their normal meanings. Longer lists such as
+the PC options, shops and multichoice questions still take the screen because they need
+the room.
 
 The overworld menu works the same way: **X** draws it in the top-right corner of the world
 instead of taking the screen, laid out two columns by four because that is the grid the

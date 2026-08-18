@@ -1607,7 +1607,7 @@ Worth doing, common in ordinary play:
 
 | menu | msg_0191 entries |
 |---|---|
-| Day-care | 133 DEPOSER POKeMON, 134 CHERCHER POKeMON, 132 RETOUR |
+| GTS / trade counter | 133 DEPOSER POKeMON, 134 CHERCHER POKeMON, 130 INFOS, 131 ECHANGE, 132 RETOUR |
 | Move Deleter / Tutor / Name Rater | short confirm lists |
 | Union Room | 168 SALUER, 169 DISCUTER, 170 TCHAT |
 
@@ -1628,13 +1628,25 @@ their grids cannot be reproduced, so each needs checking on its own. And every
 `OUI / NON` prompt (42/43, 46/47) goes through the field yes/no path instead, not
 this renderer.
 
-The honest read: after the four already done, the day-care and the move deleter
-are the only ones a normal playthrough meets often enough to earn their label
-budget. The rest are one-offs where swapping costs nothing.
+**The day-care is not on this list, and the first version of it was wrong to say
+so.** msg_0191 132/133/134 look like a deposit/retrieve menu but belong to the
+GTS counter - OFFER POKeMON / SEEK POKeMON / INFO / TRADE / EXIT in English. The
+day-care itself is `msg_0439`, and every one of its prompts is a `{YESNO}`: nine
+of them, no list menu anywhere. It is already covered by the field yes/no path.
+
+Worth taking as the general lesson: a plausible-looking run of short strings in
+msg_0191 is not evidence that a menu exists, or of which feature owns it. Check
+the feature's own message file before building anything.
+
+The honest read after that correction: none of these is clearly worth the label
+budget and the play-test round-trips. The GTS needs servers that no longer exist,
+the Pokeathlon and Safari are special-zone content, and the rest are one-offs
+where swapping costs nothing.
 
 ## Still outstanding
 
-The **X menu writes its tilemap to VRAM only**, so it has the shadow-copy bug
-described above. Nothing has been seen to erase it - while it is open the game
-pauses map objects and no message box is printed - but the defect is real and the
-fix is the one already applied to the list menus.
+Nothing known. The X menu's shadow-copy bug is fixed: `OneScreen_MirrorRect`
+copies the finished panel out of VRAM and into the game's own tilemap after
+drawing, and clears it from there on the way out. Done as a copy after the fact
+rather than by writing both destinations inside the drawing loops, which have no
+spare registers and had already been play-tested.

@@ -392,6 +392,7 @@ SM_FRAME_BASE = 0x74            @ u32 tilemap address of its top-left cell
 SM_FRAME_ROWS = 0x78            @ u8; past ldrb's immediate, so loaded by register
 SM_FRAME_COLS = 0x79
 SM_MAP_STRIDE = 64              @ bytes per tilemap row: 32 entries of 2
+SM_SCREEN_BASE = 0x06001000     @ MAIN_3's tilemap, from sBgTemplate_3
 
 @ The script list menus - the shop's ACHETER/VENDRE/QUITTER and the PC's lists.
 @ All of them are the same object: a script builds a menu, overlay 27's touch
@@ -2478,7 +2479,13 @@ OneScreen_StartMenu:
 68: adds    r6, #1
     b       75b
 
-59: movs    r0, #1                  @ drawn: the caller leaves the screen alone
+59: ldr     r0, [r7, #SM_FRAME_BASE]    @ into the game's shadow tilemap too, or
+    movs    r1, #SM_FRAME_ROWS          @ its next commit erases the panel
+    ldrb    r1, [r7, r1]
+    movs    r2, #SM_FRAME_COLS
+    ldrb    r2, [r7, r2]
+    bl      OneScreen_MirrorRect
+    movs    r0, #1                  @ drawn: the caller leaves the screen alone
     b       58f
 79: movs    r0, #0                  @ not a layout we can reproduce
 58: add     sp, #16
@@ -2504,6 +2511,48 @@ OneScreen_StartMenu:
 @ Overlapping matches are deliberate: a displacement of one word copied forward
 @ repeats that word, which is how runs of paper cost two bytes per 72.
 @ ---------------------------------------------------------------------------
+@ ---------------------------------------------------------------------------
+@ void OneScreen_MirrorRect(r0 = tilemap address, r1 = rows, r2 = columns)
+@
+@ Copy a rectangle of MAIN_3's tilemap out of VRAM and into the game's own
+@ shadow copy of it, so the next time the game commits that copy it repaints what
+@ we drew instead of erasing it. See "Who owns the VRAM you just drew into".
+@
+@ Done as a copy after the fact rather than by writing both destinations inside
+@ the drawing loops: those loops have no spare registers, and this leaves code
+@ that has already been play-tested completely untouched.
+@ ---------------------------------------------------------------------------
+    .global OneScreen_MirrorRect
+    .thumb_func
+OneScreen_MirrorRect:
+    push    {r4, r5, r6, r7, lr}
+    movs    r4, r0
+    movs    r5, r1
+    movs    r6, r2
+    bl      OneScreen_MapBuffer
+    cmp     r0, #0
+    beq     89f                     @ no buffer resolved: VRAM alone, as before
+    ldr     r1, =SM_SCREEN_BASE
+    subs    r0, r0, r1              @ buffer - screen base
+87: cmp     r5, #0
+    beq     89f
+    movs    r1, r4
+    adds    r2, r1, r0
+    movs    r3, r6
+86: ldrh    r7, [r1]
+    strh    r7, [r2]
+    adds    r1, #2
+    adds    r2, #2
+    subs    r3, #1
+    bne     86b
+    movs    r3, #SM_MAP_STRIDE
+    adds    r4, r4, r3
+    subs    r5, #1
+    b       87b
+89: pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
 @ ---------------------------------------------------------------------------
 @ void *OneScreen_MapBuffer(void) - the game's own MAIN_3 tilemap buffer, or 0.
 @ Everything drawn on that layer is written here as well as to VRAM, so the
@@ -3039,7 +3088,7 @@ OneScreen_StartMenuWipe:
     movs    r0, #SM_FRAME_ROWS
     ldrb    r4, [r7, r0]
 66: cmp     r4, #0
-    beq     67f
+    beq     68f
     movs    r0, #SM_FRAME_COLS
     ldrb    r2, [r7, r0]
     movs    r5, r1                  @ keep the row start
@@ -3053,6 +3102,12 @@ OneScreen_StartMenuWipe:
     adds    r1, r1, r3
     subs    r4, #1
     b       66b
+68: ldr     r0, [r7, #SM_FRAME_BASE]    @ clear it from the shadow copy as well,
+    movs    r1, #SM_FRAME_ROWS          @ or the next commit puts the panel back
+    ldrb    r1, [r7, r1]
+    movs    r2, #SM_FRAME_COLS
+    ldrb    r2, [r7, r2]
+    bl      OneScreen_MirrorRect
 67: pop     {r4, r5, r6, r7, pc}
     .align  2
     .pool

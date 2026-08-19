@@ -50,6 +50,8 @@ DEF_INTRO_A_EXEC = 0            @ opening cinematic, overlay 60; the patcher
 DEF_INTRO_B_EXEC = 0            @ finds them by signature, 0 = leave it alone
 DEF_INTRO_C_EXEC = 0
 DEF_INTRO_CLOCK = 0
+DEF_THEME_BAND = 0              @ BGR555 for a selected band, 0 = leave the
+                                @ game's own palettes untouched
 
 KEY_A       = 0x001
 KEY_B       = 0x002
@@ -591,6 +593,21 @@ OAK_NAME_PRE_HI    = 97
 OAK_THEME_SOURCE = 0x05000022
 OAK_THEME_DEST   = 0x050000D8
 
+@ A selected band is always palette index 12, but of whichever palette the box
+@ it sits in belongs to. Stock, the patch WRITES none of these - it borrows the
+@ salmon the game happens to keep in palette 11. A theme has to write them:
+@
+@   palette 6   Oak's dialogWindow          0x05000000 + 6*32 + 12*2
+@   palette 11  battle message window, and the evolution prompt that shares it
+@   palette 12  the field dialogue box
+@
+@ Written per frame while a prompt is drawn, never unconditionally: palette RAM
+@ is shared, and colouring 11 and 12 outside a prompt would recolour whatever
+@ else happens to be using index 12 at the time.
+BAND_DEST_OAK    = 0x050000D8
+BAND_DEST_BATTLE = 0x05000178
+BAND_DEST_FIELD  = 0x05000198
+
 OAK_STATE_OFF = 0x0C            @ OakSpeechData.state
 OAK_DATA_OFF = 0x08             @ manager->data, from &proc_state (+0x14)
 OAK_TUTORIAL_HI = 7             @ 0..7: the tutorial menu
@@ -710,6 +727,7 @@ cfg_intro_a_exec:   .word DEF_INTRO_A_EXEC
 cfg_intro_b_exec:   .word DEF_INTRO_B_EXEC
 cfg_intro_c_exec:   .word DEF_INTRO_C_EXEC
 cfg_intro_clock:    .word DEF_INTRO_CLOCK
+cfg_theme_band:     .word DEF_THEME_BAND
 
 pad_held:       .word 0
 pad_new:        .word 0         @ newly pressed this frame
@@ -1449,6 +1467,8 @@ OneScreen_BattleDraw:
     movs    r4, r0
 48: ldr     r0, =bt_drawn
     str     r4, [r0]
+    ldr     r0, =BAND_DEST_BATTLE   @ colour the selected band before drawing on it
+    bl      OneScreen_BandTheme
     movs    r0, r4
     bl      OneScreen_BattleMenu
 42: pop     {r4, r5, pc}
@@ -1951,6 +1971,10 @@ OneScreen_EvolutionPrompt:
     adds    r0, #(LABEL_GEO_YN << 4)
     ldr     r1, =evolution_drawn
     str     r0, [r1]
+    push    {r0}
+    ldr     r0, =BAND_DEST_BATTLE   @ the evolution prompt borrows that window
+    bl      OneScreen_BandTheme
+    pop     {r0}
     bl      OneScreen_BattleMenu    @ redraw after the evolution frame work
     movs    r0, #0
     bl      OneScreen_SetSwap       @ keep the question and labels on the top LCD
@@ -2080,11 +2104,32 @@ OneScreen_OakSuppressFocus:
 @ entry of the dialog palette. The source is gold in HG and blue/silver in SS.
     .thumb_func
 OneScreen_OakTheme:
-    ldr     r0, =OAK_THEME_SOURCE
-    ldrh    r1, [r0]
-    ldr     r0, =OAK_THEME_DEST
+    ldr     r0, =cfg_theme_band
+    ldr     r1, [r0]
+    cmp     r1, #0
+    bne     84f
+    ldr     r0, =OAK_THEME_SOURCE   @ no theme chosen: keep the old behaviour and
+    ldrh    r1, [r0]                @ borrow the edition's own intro colour
+84: ldr     r0, =BAND_DEST_OAK
     strh    r1, [r0]
     bx      lr
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ void OneScreen_BandTheme(r0 = palette-entry address)
+@ Put the chosen band colour into one index-12 entry. Does nothing at all when
+@ no theme is set, which leaves every prompt looking exactly as it did.
+@ ---------------------------------------------------------------------------
+    .global OneScreen_BandTheme
+    .thumb_func
+OneScreen_BandTheme:
+    ldr     r1, =cfg_theme_band
+    ldr     r1, [r1]
+    cmp     r1, #0
+    beq     83f
+    strh    r1, [r0]
+83: bx      lr
     .align  2
     .pool
 
@@ -3428,6 +3473,10 @@ OneScreen_ScriptMenu:
     str     r5, [r1]
     movs    r0, r5
     adds    r0, #(LABEL_GEO_FIELD << 4)
+    push    {r0}
+    ldr     r0, =BAND_DEST_FIELD
+    bl      OneScreen_BandTheme
+    pop     {r0}
     bl      OneScreen_BattleMenu    @ redraw after the game's message work
     b       54f
 

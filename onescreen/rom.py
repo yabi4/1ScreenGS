@@ -19,7 +19,7 @@ import ndspy.code
 import ndspy.codeCompression
 import ndspy.rom
 
-from . import inject, labels, regions, sites, table
+from . import inject, labels, regions, sites, table, themes
 
 PAYLOAD_DIR = pathlib.Path(__file__).resolve().parent / "payload"
 
@@ -63,8 +63,13 @@ def identify(rom_bytes: bytes):
     return code, _text(rom.name).rstrip("\0 "), known, sha1
 
 
-def patch(rom_bytes: bytes, log=print, auto_battle=True):
-    """Return the patched ROM image."""
+def patch(rom_bytes: bytes, log=print, auto_battle=True,
+          theme=themes.DEFAULT_THEME):
+    """Return the patched ROM image.
+
+    `theme` colours what the patch draws - the panels' palettes and the band
+    behind a highlighted choice. It changes no sizes or offsets.
+    """
     code, title, known, sha1 = identify(rom_bytes)
     log(f"  ROM      : {title}  [{code}]")
     log(f"  SHA-1    : {sha1}")
@@ -159,6 +164,10 @@ def patch(rom_bytes: bytes, log=print, auto_battle=True):
         else:
             log("  Intro    : scenes not found; the opening cinematic is left alone")
 
+        # The colour a selected choice is drawn on. Zero leaves the game's own
+        # palettes untouched, which is what every build did before themes.
+        values["theme_band"] = themes.get(theme)["band"]
+
         payload = inject.fill_config(payload, meta["symbols"]["OneScreen_Config"],
                                      meta["load_addr"], values)
 
@@ -168,7 +177,7 @@ def patch(rom_bytes: bytes, log=print, auto_battle=True):
         # them: the hook checks the blob's magic and simply draws nothing, which
         # costs the labels but leaves every other behaviour intact.
         try:
-            blob = labels.build(rom, log=log)
+            blob = labels.build(rom, log=log, theme=theme)
             payload = inject.fill_labels(payload,
                                          meta["symbols"]["OneScreen_Labels"],
                                          meta["load_addr"], blob)

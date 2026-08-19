@@ -8,6 +8,7 @@ Everything needed to rebuild, extend or debug the patch. Read
 
 ```
 patch.py              user-facing CLI
+patch-gui.py          user-facing window (tkinter); tools/build_exe.py freezes it
 onescreen/            the patcher itself - no devkitARM needed
   sites.py            finds and rewrites POWCNT1 display-routing sites
   table.py            which sites to flip, which to leave alone

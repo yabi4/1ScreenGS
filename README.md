@@ -2,13 +2,14 @@
 
 Play **Pokémon HeartGold / SoulSilver** on a single screen.
 
-![The battle command menu drawn onto the scene](docs/img/battle.png)
-![The overworld menu drawn onto the world](docs/img/menu.png)
+![The overworld menu drawn onto the world, in the HeartGold theme](docs/img/menu.png)
 
-*Both shots are the top screen on its own. The commands and the menu are **drawn onto the
-scene**, in the game's own words and font — nothing is swapped in from the touch screen.*
+*The top screen on its own. The menu is **drawn onto the world**, in the game's own words
+and font — nothing is swapped in from the touch screen — and takes its colours from the
+theme you choose when patching.*
 
-> **v0.1b** — playable start to finish on French SoulSilver and HeartGold. See
+> **v0.2b** — playable start to finish on French SoulSilver and HeartGold, and
+> play-tested on US HeartGold. See
 > [Compatibility](#compatibility) and [Status](#status).
 
 The DS puts half of HGSS on the touch screen — the bag, the party, the Pokédex, and
@@ -80,24 +81,43 @@ unknown NPC choice from ever appearing with the wrong labels on it.
 Starting a new game works the same way. **GARÇON / FILLE** for the gender question and
 **OUI / NON** for the confirmations are drawn beside Oak's text, so the screen stays on him
 throughout — it only changes for the naming keyboard, which genuinely needs the touch
-screen. The selected band uses Oak's own intro colour — blue/silver in SoulSilver and gold
-in HeartGold — and the obsolete lower-screen indicator is suppressed before it can flash.
+screen. The selected band takes the theme's colour, and the obsolete lower-screen
+indicator is suppressed before it can flash.
 The tutorial menu still swaps: three options of running text will not fit beside the
 question the way two words do.
 
 **L + R** swaps the screens manually at any time, as an escape hatch.
 
+## Themes
+
+Everything the patch draws takes its colours from one of three schemes — the menus on the
+world, and the band behind whichever choice is selected:
+
+| `--theme` | menus | selected choice |
+|---|---|---|
+| `classic` | white, like the game's own dialogue box | grey |
+| `heartgold` | white with a gold tint and frame | gold |
+| `soulsilver` | white with a silver tint and frame | silver |
+
+Colour only: nothing moves and no wording changes.
+
 ## Requirements
 
 - Your own dump of Pokémon HeartGold or SoulSilver (**French versions are the tested
   ones** — see [Compatibility](#compatibility))
-- [Python 3.9+](https://www.python.org/) and [ndspy](https://github.com/RoadrunnerWMC/ndspy):
-  `pip install ndspy`
+- Nothing else, if you use `1ScreenHGSS.exe`
+- To run from source: [Python 3.9+](https://www.python.org/) and
+  [ndspy](https://github.com/RoadrunnerWMC/ndspy) — `pip install ndspy`
 
 ## Use
 
+**Windows:** download `1ScreenHGSS.exe`, drop your ROM on the window and press Patch.
+Nothing to install - it picks the theme to match your game, and you can override it.
+
+**From source:**
+
 ```bash
-python patch.py "Pokemon - Version Argent SoulSilver.nds"
+python patch.py "Pokemon - Version Argent SoulSilver.nds" --theme heartgold
 ```
 
 That writes `Pokemon - Version Argent SoulSilver-1screen.nds` next to it. Your original

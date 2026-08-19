@@ -2,6 +2,17 @@
 
 ## Patching your ROM
 
+### The easy way
+
+Download `1ScreenHGSS.exe`, drop your ROM on the window (or click to browse) and press
+**Patch**. Nothing else to install — no Python, no ndspy. The patched file appears next
+to your original, which is never modified.
+
+The theme is chosen for you from the game — HeartGold or SoulSilver — and you can pick a
+different one before pressing Patch.
+
+### From source
+
 You need [Python 3.9+](https://www.python.org/) and ndspy:
 
 ```bash
@@ -20,9 +31,26 @@ Useful flags:
 
 ```bash
 python patch.py mygame.nds -o soulsilver-1screen.nds   # choose the output name
+python patch.py mygame.nds --theme heartgold           # colour scheme (below)
 python patch.py mygame.nds --identify                  # just report what the ROM is
 python patch.py mygame.nds --no-hook                   # static flips only, no toggle
 ```
+
+`python patch-gui.py` opens the same window as the .exe, if you would rather run it
+from source.
+
+## Colour themes
+
+Everything this patch draws — the menus on the world, and the band behind whichever
+choice is selected — takes its colours from one of three themes:
+
+| `--theme` | menus | selected choice |
+|---|---|---|
+| `classic` | white, like the game's own dialogue box | grey |
+| `heartgold` | white with a gold tint and frame | gold |
+| `soulsilver` | white with a silver tint and frame | silver |
+
+The theme changes colour and nothing else: no menu moves, and no text changes.
 
 `--no-hook` skips the resident code entirely: you get the screen flips for menus but no
 automatic battle swapping, no X-menu handling and no L+R toggle. Only useful for

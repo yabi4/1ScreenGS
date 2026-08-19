@@ -1750,3 +1750,75 @@ Worth the habit: after a control-flow edit, disassemble the built payload and
 confirm the call is actually emitted where it should be. Checking
 `OneScreen_Poll` for a `BL` to the new routine takes seconds and is the only way
 to catch dead code, which no build error will ever report.
+
+
+## Colour: what the patch owns, and what it only borrows
+
+Two different mechanisms, and the difference decides how hard each is to change.
+
+**The panels own their palettes.** The X menu, the shop's and the PC's menus ship
+two 16-entry palettes in the label blob and copy them into main-BG slots 7 and 8.
+Nothing else writes those slots, so a theme is a patch-time swap of 64 bytes:
+every offset, record field and tile is identical whichever theme is chosen. The
+three themes produce blobs of exactly the same size, differing only inside the
+palette regions.
+
+**The selected band is borrowed.** Every prompt - battle commands, battle yes/no,
+evolution, field yes/no, Oak's yes/no and gender - paints its highlight with
+palette **index 12**, and stock, the patch never wrote that entry. It relied on
+the salmon the game happens to keep in the battle message palette, which is why a
+highlight was salmon in battle and a different colour elsewhere.
+
+Theming it means writing palettes the patch did not previously write:
+
+| prompt | palette | address |
+|---|---|---|
+| Oak | 6 | `0x050000D8` |
+| battle, evolution | 11 | `0x05000178` |
+| field yes/no | 12 | `0x05000198` |
+
+Written per frame from each draw site while a prompt is up - never from the frame
+hook unconditionally. Palette memory is shared, and colouring 11 or 12 outside a
+prompt would recolour whatever else happened to be using index 12 at the time.
+
+`_render`'s `invert` flag is orthogonal to all of this: it does not change the
+band, only the glyphs on it, dropping the shadow and turning ink to paper. Oak's
+two prompts used it because the band used to be whatever saturated colour his
+intro was showing. A theme picks a light colour deliberately, so inverting made
+his selected choice white while every other prompt's was black - it is off now.
+
+### Oak's prompts still flash, and why that was left alone
+
+The band behind Oak's selected choice alternates between the theme colour and the
+game's own red. This predates themes; the earlier edition-colour version flashed
+the same way.
+
+It is a race, not a stale value. `OneScreen_OakDraw` redraws **every frame** on
+purpose - Oak repaints that window as he builds each state, so a draw-once would
+simply be painted over - and the band colour is written every frame with it. The
+game wins some of those frames because, as the focus-indicator work already
+established, **the print task runs later in the main loop than this hook does.**
+
+Two things were ruled out:
+
+- **It is not the palette shadow buffer.** Gen-IV keeps an unfaded copy in
+  `PaletteData.buffers[].opaque` and pushes it to palette RAM, which would have
+  been the same shape as the tilemap fix. Searching a savestate's main RAM for a
+  `PaletteBuffer`-shaped record with a plausible palette found exactly one, and
+  its palette 6 matches neither Oak's dialogue nor our colour.
+- **It is not a missing write.** `oak_drawn` confirms the draw runs, and the theme
+  write sits on the same path.
+
+What is left is the native multichoice controller drawing its own highlight into
+the same window during the INPUT states (65, 69, 98). The existing suppression -
+which neutralises the `{YESNO 0}` control in the live string before the printer
+sees it - only runs at the INIT states (61, 67, 97), where the string is created.
+Neutralising the controller's own rendering during input is a bigger and riskier
+intervention than suppressing one control code, and it touches the part of Oak's
+flow that works.
+
+Left alone deliberately: cosmetic, pre-existing, and confined to two prompts in
+the opening minutes. If it is ever worth chasing, the next step is two savestates
+a frame or two apart during the flash, diffed over Oak's dialogue window tiles -
+that separates "the red arrives as pixels" from "the red arrives as a palette
+entry", which decides which of the two fixes applies.

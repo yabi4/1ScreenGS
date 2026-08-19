@@ -56,7 +56,8 @@ CONFIG_FIELDS = ("pad_held", "app_callback", "field_callback",
                  "pc_exec_orig", "field_sys", "screens_flipped",
                  "map_exec_orig", "start_menu_task", "oak_exec_orig",
                  "battle_exec_orig", "intro_a_exec", "intro_b_exec",
-                 "intro_c_exec", "intro_clock")
+                 "intro_c_exec", "intro_clock",
+                 "theme_band")
 
 
 def fill_config(payload: bytes, config_addr: int, load_addr: int,

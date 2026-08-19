@@ -20,6 +20,8 @@ except ImportError:
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from onescreen import rom as onescreen_rom  # noqa: E402
+from onescreen import themes  # noqa: E402
+from onescreen import __version__  # noqa: E402
 
 
 def main():
@@ -30,6 +32,11 @@ def main():
     ap.add_argument("--no-hook", action="store_true",
                     help="static screen flips only: no ITCM code, no automatic "
                          "battle swapping and no L+R toggle")
+    ap.add_argument("--theme", default=themes.DEFAULT_THEME,
+                    choices=sorted(themes.THEMES),
+                    help="colour scheme for the menus this patch draws")
+    ap.add_argument("--version", action="version",
+                    version=f"1ScreenHGSS {__version__}")
     ap.add_argument("--identify", action="store_true",
                     help="report what the ROM is and exit without patching")
     args = ap.parse_args()
@@ -52,7 +59,8 @@ def main():
         sys.exit("refusing to overwrite the source ROM; choose another -o")
 
     print(f"1ScreenHGSS - patching {src.name}")
-    out = onescreen_rom.patch(data, auto_battle=not args.no_hook)
+    out = onescreen_rom.patch(data, auto_battle=not args.no_hook,
+                              theme=args.theme)
     dst.write_bytes(out)
     print(f"  Written  : {dst}  ({len(out):,} bytes)")
     print("\nDone. Put your .sav next to it with a matching name, and set your\n"

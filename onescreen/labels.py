@@ -47,6 +47,8 @@ shadowColor 2.
 import struct
 import zlib
 
+from . import themes
+
 # --- palette 11 indices, per sFontInfos and the live dump --------------------
 FG, SHADOW, PAPER = 1, 2, 15
 HILITE = 12                     # 0x62FF, the salmon already in palette 11
@@ -243,19 +245,28 @@ SM_PAL_NORM = 7
 SM_PAL_HI = 8
 PAL_RAM_MAIN_BG = 0x05000000
 
-def _bgr555(r, g, b):
-    return (b << 10) | (g << 5) | r
+_bgr555 = themes.bgr555
 
 # index 0 stays transparent; 1/2/15 are ink, shadow and paper, matching the
 # indices the font rasteriser already emits. 3 and 4 are the border, which keeps
-# the same grey in both palettes - the frame is drawn once and never highlights.
-BORDER, BORDER_DK = 3, 4
-SM_PAL_NORM_RGB = {0: 0, FG: _bgr555(31, 31, 31), SHADOW: _bgr555(2, 5, 2),
-                   BORDER: _bgr555(20, 20, 21), BORDER_DK: _bgr555(9, 9, 10),
-                   PAPER: _bgr555(6, 18, 8)}
-SM_PAL_HI_RGB = {0: 0, FG: _bgr555(2, 6, 2), SHADOW: _bgr555(31, 31, 31),
-                 BORDER: _bgr555(20, 20, 21), BORDER_DK: _bgr555(9, 9, 10),
-                 PAPER: _bgr555(20, 30, 20)}
+# the same colour in both palettes - the frame is drawn once and never
+# highlights. The actual values come from the chosen theme; these two names are
+# rebound per build by _use_theme() below.
+BORDER, BORDER_DK = themes.BORDER, themes.BORDER_DK
+SM_PAL_NORM_RGB, SM_PAL_HI_RGB = themes.THEMES[themes.DEFAULT_THEME]["panel"]
+
+
+def _use_theme(name):
+    """Point the panel palettes at one theme, and return it.
+
+    Module-level rather than threaded through every call because the palettes
+    are read from a dozen places - the two pool builders and the PNG preview -
+    and a build only ever uses one theme.
+    """
+    global SM_PAL_NORM_RGB, SM_PAL_HI_RGB
+    theme = themes.get(name)
+    SM_PAL_NORM_RGB, SM_PAL_HI_RGB = theme["panel"]
+    return theme
 
 # --- the script list menus: the shop's and the PC's ---------------------------
 #
@@ -1048,13 +1059,18 @@ def _listmenu(font: Font, archive, off: int, region: str = ""):
 # Entry point
 # ---------------------------------------------------------------------------
 
-def build(rom, log=print) -> bytes:
+def build(rom, log=print, theme=themes.DEFAULT_THEME) -> bytes:
     """Return the label blob for this ROM.
 
     `rom` is an ndspy NintendoDSRom. Raises LabelError if anything about the
     ROM's message or font data is not what this module expects, rather than
     emitting tiles that would draw as garbage on the top screen.
+
+    `theme` only changes colour: the panels' two palettes are a fixed 64 bytes
+    in the blob, so every offset, size and record field is identical whichever
+    one is chosen.
     """
+    chosen = _use_theme(theme)
     try:
         msg_id = rom.filenames.idOf(MSGDATA_NARC)
         font_id = rom.filenames.idOf(FONT_NARC)
@@ -1091,9 +1107,15 @@ def build(rom, log=print) -> bytes:
     sets = [
         (_layout(font, labels), 4, CELL_W, GRID_COLS, False),
         (_layout_yesno(font, choices), 2, YN_CELL_W, YN_COLS, False),
-        (_layout_yesno(font, oak), 2, YN_CELL_W, YN_COLS, True),
+        # Oak's two prompts used to invert - white ink, no shadow - because the
+        # band was whatever saturated colour his intro happened to be using, and
+        # dark text vanished into it. A theme picks that colour now, and picks a
+        # light one, so ordinary dark ink is both legible and consistent with
+        # every other prompt. Inverting here is what made his selected choice
+        # come out white while the rest came out black.
+        (_layout_yesno(font, oak), 2, YN_CELL_W, YN_COLS, False),
         (_layout_row(font, gender, GENDER_CELL_W), 2, GENDER_CELL_W, GENDER_COLS,
-         True),
+         False),
     ]
 
     geometries = [
@@ -1173,6 +1195,8 @@ def build(rom, log=print) -> bytes:
     log(f"  Labels   : commands {fmt(labels)} px, battle yes/no {fmt(choices)} px, "
         f"field alias, Oak yes/no {fmt(oak)} px, gender {fmt(gender)} px, "
         f"{len(blob)} bytes")
+    log(f"  Theme    : {chosen['label']}, panel paper "
+        f"{SM_PAL_NORM_RGB[PAPER]:#06x}, band {chosen['band']:#06x}")
     log(f"  X menu   : {len(sm_labels)} labels, widest "
         f"{max(_text_width(font, c) for _a, c in sm_labels)} px, "
         f"{_startmenu_cell_w(font, sm_labels)}x{SM_CELL_H} tile cells")

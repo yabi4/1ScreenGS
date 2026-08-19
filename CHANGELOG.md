@@ -2,6 +2,52 @@
 
 ## Unreleased — `V0.2b`
 
+### Colour themes
+
+Everything the patch draws now takes its colours from one of three schemes, chosen when you
+patch: the menus drawn on the world, and the band behind whichever choice is selected.
+
+| theme | menus | selected choice |
+|---|---|---|
+| `classic` | white, like the game's own dialogue box | grey |
+| `heartgold` | white with a gold tint and frame | gold `#fbd392` |
+| `soulsilver` | white with a silver tint and frame | silver `#9abafb` |
+
+The panels cost nothing to theme — their palettes were already a fixed 64 bytes in the
+label blob, so every offset and size is identical whichever theme is chosen.
+
+The selected band was a different matter. Every prompt paints it with palette index 12, and
+the patch never wrote that entry: it borrowed whatever the game happened to keep there,
+which is why a highlight was salmon in battle and grey elsewhere. Theming it means writing
+palettes the patch had not written before, per frame while a prompt is drawn — never
+unconditionally, since palette memory is shared and colouring it outside a prompt would
+recolour whatever else was using that entry.
+
+Oak's questions used to borrow the intro's own edition colour for their band. A chosen
+theme supersedes that; picking HeartGold or SoulSilver reproduces roughly what it did.
+
+They also used to invert their selected text — white ink, no shadow — because that band was
+whatever saturated colour Oak's intro happened to be showing, and dark text vanished into
+it. A theme picks a light colour deliberately, so his selected choice came out white while
+every other prompt's came out black. It no longer inverts.
+
+One thing is **not** fixed: the band behind Oak's selected choice still alternates with the
+game's own red. That predates themes — the earlier version flashed the same way — and it is
+a race with a print task that runs later in the frame than this patch does.
+`docs/FINDINGS.md` records what was ruled out and what the next step would be.
+
+### A windowed patcher
+
+`1ScreenHGSS.exe` — drop a ROM on it or click to browse and press Patch. No Python, no
+ndspy, nothing to install. The theme is chosen from the game, HeartGold or SoulSilver,
+unless you pick one yourself. `python patch-gui.py` opens the same window from
+source, and `patch.py` gains `--theme` and `--version`.
+
+The window checks the file itself before handing it to the ROM library, which validates
+almost nothing — it pads anything short with zeros, so a five-byte file would otherwise
+"identify" perfectly well and fail much later with a traceback.
+
+
 ### The opening cinematic plays on the top screen
 
 Three of its scenes showed their content on the lower LCD. They are identified inside

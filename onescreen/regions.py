@@ -34,6 +34,10 @@ FR_STATE_BLOCK = 0x021D112C
 
 PAD_HELD_OFFSET = 0x38          # gSystem.heldKeysRaw
 SCREENS_FLIPPED_OFFSET = 0x69   # gSystem.screensFlipped
+# A tick counter beside the application slot, running at about twice the
+# cinematic's own frame counter. It matters because it keeps counting after
+# the intro application has gone, which the scene counters cannot do.
+INTRO_CLOCK_OFFSET = 0x2C
 
 # The battle phase signal. Found empirically first, then identified with the
 # decomp as pret/pokeheartgold's poke_overlay.c:
@@ -80,22 +84,121 @@ START_MENU_TASK_SIG = bytes.fromhex(
 # The evolution scene is the same shape: ARM9 code, no POWCNT1 site of its own,
 # so it keeps whatever routing it inherits - the menu's, when the evolution was
 # triggered from the bag. Its Pokemon and text are on engine A.
+# The move relearner is the same shape again, but it lives in an OVERLAY rather
+# than in ARM9, so its entry names one: overlay 68, MoveRelearner_Main. It has no
+# static OverlayManagerTemplate to take over - launch_application.c builds that on
+# the stack - so it is matched on the live exec pointer instead.
+#
+# Overlay code MOVES between regions, unlike ARM9 code, so the address is found by
+# searching the overlay rather than written down: US loads overlay 68 0x20 lower
+# and the function sits at 0x021E5B6C instead of 0x021E5B8C. Three of the twelve
+# halfwords are BL instructions, whose encodings are target-relative, so those are
+# masked out of the comparison. Exactly one match in IPGF, IPKF and IPKE.
+#
+# swap=1 rather than the 0 used by name entry and the evolution scene, which draw
+# on engine A: the relearner's move list is engine B. Without an entry it keeps
+# whatever routing it inherits, and since field prompts now hold the world on top,
+# that left the move list on the bottom screen.
+#
+#   push {r4,lr} / mov r4,r0 / ldr r0,[r4,#4] / BL / movs r0,#0x56 /
+#   lsls r0,r0,#2 / ldr r0,[r4,r0] / BL / BL
+RELEARNER_SIG = bytes.fromhex("10b5041c606839f68ff956208000205823f63cfc3af63cfd")
+RELEARNER_MASK = bytes.fromhex("ffffffffffff00000000ffffffffffff0000000000000000")
+
 APP_TABLE = [
     ("name entry", 0x02083141, 0,
-     bytes.fromhex("08b59df76bfa88f76df8034b034901205a581043585008bd")),
+     bytes.fromhex("08b59df76bfa88f76df8034b034901205a581043585008bd"), None, None),
     ("evolution", 0x02077271, 0,
-     bytes.fromhex("38b5041c75300278201c73300178201c72300078ff231b02")),
+     bytes.fromhex("38b5041c75300278201c73300178201c72300078ff231b02"), None, None),
+    ("move relearner", None, 1, RELEARNER_SIG, 68, RELEARNER_MASK),
 ]
 
 
-def check_app_table(arm9: bytes):
-    """Return [(name, callback, swap, ok), ...] for the app_table entries."""
+def _find_masked(data: bytes, base: int, sig: bytes, mask: bytes):
+    """Addresses where `sig` matches `data`, ignoring bytes `mask` zeroes out."""
     out = []
-    for name, callback, swap, sig in APP_TABLE:
-        off = (callback & ~1) - ARM9_RAM
-        ok = 0 <= off and arm9[off:off + len(sig)] == sig
-        out.append((name, callback, swap, ok))
+    for i in range(0, len(data) - len(sig), 2):
+        if all((data[i + k] & mask[k]) == (sig[k] & mask[k]) for k in range(len(sig))):
+            out.append(base + i)
     return out
+
+
+def check_app_table(arm9: bytes, overlays=None):
+    """Return [(name, callback, swap, ok), ...] for the app_table entries.
+
+    An entry whose code no longer matches, or whose address cannot be resolved
+    uniquely, comes back with ok=False and is written as a terminator - the app
+    then keeps whatever routing it inherits, which is how it behaved before.
+    """
+    out = []
+    for name, callback, swap, sig, ovy_id, mask in APP_TABLE:
+        if ovy_id is None:
+            off = (callback & ~1) - ARM9_RAM
+            ok = 0 <= off and arm9[off:off + len(sig)] == sig
+            out.append((name, callback, swap, ok))
+            continue
+        ov = (overlays or {}).get(ovy_id)
+        found = []
+        if ov is not None:
+            try:
+                found = _find_masked(ov.data, ov.ramAddress, sig, mask)
+            except Exception:                   # noqa: BLE001
+                found = []
+        if len(found) == 1:
+            out.append((name, found[0] | 1, swap, True))
+        else:
+            out.append((name, callback or 0, swap, False))
+    return out
+
+
+# The opening cinematic, overlay 60. Four scene functions run in sequence, and
+# two of them show on the wrong screen. They are found the same way the move
+# relearner is - by masked search inside the overlay, because overlay code moves
+# between regions: US loads overlay 60 0x20 lower and both functions shift with
+# it (A 0x021E7A05 -> 0x021E79E5, B 0x021E8C39 -> 0x021E8C59).
+#
+# The prologues are mostly BL instructions, whose encodings are target-relative,
+# so a 28-byte window leaves too few fixed bytes to be unique - scene B matched
+# twice. 64 bytes gives 28 fixed bytes and exactly one hit for each, in IPGF,
+# IPKF and IPKE alike.
+INTRO_OVERLAY = 60
+INTRO_A_SIG = bytes.fromhex(
+    "08b5fff74ffe37f653fa23f609fc08bd70b5051c0c1cfff745fe061c39f652fe"
+    "3af608fe0f48012141723bf685f9281c00f034f9281cfff741fe0b48291c32f6")
+INTRO_A_MASK = bytes.fromhex(
+    "ffff000000000000000000000000ffffffffffffffff00000000ffff00000000"
+    "00000000ffffffffffff00000000ffff00000000ffff00000000ffffffffffff")
+INTRO_B_SIG = bytes.fromhex(
+    "08b5fef735fd36f639f922f6effa08bd70b582b0051c0c1cfef72afd061c38f6"
+    "37fd39f6edfc1e48002141723af66af8281c00f079fc281cfef726fd1948291c")
+INTRO_B_MASK = bytes.fromhex(
+    "ffff000000000000000000000000ffffffffffffffffffff00000000ffff0000"
+    "0000000000000000ffffffffffff00000000ffff00000000ffff00000000ffffffff"[:128])
+
+
+INTRO_C_SIG = bytes.fromhex(
+    "08b5fdf7adfc35f6b1f821f667fa08bd70b582b0051c0c1cfdf7a2fc061c37f6"
+    "affc38f665fc37480121417238f6e2ff0020011c25f63aff0120002125f636ff")
+INTRO_C_MASK = bytes.fromhex(
+    "ffff000000000000000000000000ffffffffffffffffffff00000000ffff0000"
+    "000000000000000000000000000000000000ffffffff00000000ffffffff0000")
+
+
+def find_intro_scenes(overlays):
+    """Return (scene_a, scene_b, scene_c) exec addresses, 0 where unsure."""
+    ov = (overlays or {}).get(INTRO_OVERLAY)
+    if ov is None:
+        return 0, 0, 0
+    try:
+        data = ov.data
+    except Exception:                           # noqa: BLE001
+        return 0, 0, 0
+    out = []
+    for sig, mask in ((INTRO_A_SIG, INTRO_A_MASK), (INTRO_B_SIG, INTRO_B_MASK),
+                      (INTRO_C_SIG, INTRO_C_MASK)):
+        hits = _find_masked(data, ov.ramAddress, sig, mask)
+        out.append((hits[0] | 1) if len(hits) == 1 else 0)
+    return tuple(out)
 
 
 def _checked(arm9: bytes, addr: int, sig: bytes) -> int:
@@ -204,5 +307,6 @@ def resolve(arm9: bytes, overlays) -> tuple[dict, int]:
         "battle_state": regions_base + BATTLE_OVERLAY_SLOT * LOADED_OVERLAY_SIZE,
         "field_sys": field_sys,
         "screens_flipped": state_block + SCREENS_FLIPPED_OFFSET,
+        "intro_clock": state_block + INTRO_CLOCK_OFFSET,
         "start_menu_task": _checked(arm9, START_MENU_TASK, START_MENU_TASK_SIG),
     }, delta

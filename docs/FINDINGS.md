@@ -1650,3 +1650,103 @@ copies the finished panel out of VRAM and into the game's own tilemap after
 drawing, and clears it from there on the way out. Done as a copy after the fact
 rather than by writing both destinations inside the drawing loops, which have no
 spare registers and had already been play-tested.
+
+
+## Applications that live in overlays
+
+The move relearner is the Blackthorn tutor's move list: **overlay 68,
+`MoveRelearner_Main`**. It sets no display routing of its own, so it keeps
+whatever it inherits - and once field prompts began holding the world on top, it
+inherited that and opened on the bottom screen. Teach a move and the routing left
+behind afterwards happened to be the other way, which is why it looked
+intermittent rather than broken.
+
+Two things make an overlay-resident application different from an ARM9 one:
+
+- **It has no static `OverlayManagerTemplate` to take over.** `launch_application.c`
+  builds that on the stack, so there is nothing in ROM to patch. It is matched on
+  the live exec pointer instead.
+- **Overlay code MOVES between regions.** ARM9 code addresses are identical
+  across IPGF, IPKF and IPKE; overlay ones are not. US loads overlay 68 0x20
+  lower and the function sits at 0x021E5B6C rather than 0x021E5B8C. A written-down
+  address would have worked on French and silently failed everywhere else - which
+  is exactly what the first attempt did, and the patcher said so.
+
+So these are found by searching the overlay for the function's own bytes, with the
+`BL` instructions masked out because their encodings are target-relative. Exactly
+one match in each of the three ROMs.
+
+### A bounds check that did not bound anything
+
+Adding a third entry to `app_table` black-screened the game on boot. The table
+reserved two entries and a terminator, `OneScreen_SetSwap` began immediately
+after it, and the fill overwrote that routine's first instructions - a routine
+the hook calls constantly.
+
+`fill_app_table` did check its write, but against the size of the *payload*, which
+is always true. It now stops at `OneScreen_AppTableEnd`, and adding one entry too
+many is rejected with a message naming the file to edit. A check that cannot fail
+is worse than no check: it reads as safety while providing none.
+
+## The opening cinematic
+
+Overlay 60, four scene functions in sequence. Three of them show content on the
+wrong screen, and the corrections are not uniform - two want engine A raised, one
+wants engine B, so each carries its own value rather than a shared "swap".
+
+**It is the one part of this patch driven by elapsed time.** Diffing a good frame
+against a bad one inside a single scene leaves exactly ONE differing byte: a frame
+counter in the scene's own data block. There is no scene id and no flag, so the
+halves cannot be separated any other way. That is defensible here in a way it
+would not be elsewhere - a cinematic's scenes really are defined by time - but the
+thresholds (102, 1090, 1867) are measured numbers, taken on frames where the
+screen is black so being a frame out cannot be seen. Play-tested on IPKE as well
+as IPGF, so the timing does hold across regions.
+
+**The last sequence outlives the application that starts it.** At its final frame
+nothing is registered in the application slot at all, so there is no scene counter
+left to test. It is held instead on a tick counter beside that slot
+(`state_block + 0x2C`, about twice the scene rate) which keeps running after the
+intro tears down. The hold expires on its own and is dropped the moment the field
+system appears, so it cannot follow the player into the game.
+
+## Four attempts on one bug: the save screen
+
+Choosing SAUVER does not start an application. The start menu task stays alive in
+`START_MENU_STATE_SAVE` while the save box runs, so the app never changes, and
+every guard that keys off an app change silently does nothing. That single fact
+produced four separate failures, each hidden behind the last:
+
+1. **The panel held the world on top** while the save box sat underneath it.
+   Drawing now stops for states 6 and 7 and the caller swaps instead.
+2. **The panel came back blank.** The save screen takes those tiles and that
+   palette; the "already uploaded" flag still said otherwise. Every other entry on
+   the menu is a separate application, so Poll's app-change guard covered those -
+   which is why only SAUVER showed it.
+3. **The panel came back frozen.** `sm_drawn` was answering two questions - "are
+   the tiles uploaded" and "is a panel on screen" - so clearing it to force a
+   re-upload also told the wipe there was nothing to remove. The stale panel then
+   survived in the game's shadow tilemap, being re-committed every frame. Split
+   into `sm_drawn` and `sm_shown`.
+4. **Cancelling left no panel at all.** `menu_swapped` is set only by an X press,
+   and the save had cleared it; saving looked fine only because the menu closes
+   afterwards anyway. The latch now re-arms from the game's own state whenever the
+   menu is in `START_MENU_STATE_HANDLE_INPUT` - narrower than "the menu exists" on
+   purpose, since X and B move it to the close state in the same frame the game
+   reads the press.
+
+The root cause of (3) and (4) together: the X menu kept three pieces of state that
+each half-answered "is the menu up?". Deriving it from the game's own state is
+what it should have done from the start.
+
+### And one that was not a bug at all
+
+The fix for (4) did nothing on its first build, because it was placed *before* the
+label the preceding branch jumps to - the B path branches to `15` rather than
+falling through, so the block was unreachable. It assembled cleanly and cost a
+test round.
+
+Worth the habit: after a control-flow edit, disassemble the built payload and
+confirm the call is actually emitted where it should be. Checking
+`OneScreen_Poll` for a `BL` to the new routine takes seconds and is the only way
+to catch dead code, which no build error will ever report.

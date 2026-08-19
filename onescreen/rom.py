@@ -149,6 +149,16 @@ def patch(rom_bytes: bytes, log=print, auto_battle=True):
             else:
                 values[field] = 0
                 log(f"  {label:<9}: template not found; {effect}")
+        intro_a, intro_b, intro_c = regions.find_intro_scenes(overlays)
+        values["intro_a_exec"] = intro_a
+        values["intro_b_exec"] = intro_b
+        values["intro_c_exec"] = intro_c
+        if intro_a and intro_b and intro_c:
+            log(f"  Intro    : scenes {intro_a:#010x} {intro_b:#010x} {intro_c:#010x} "
+                f"put on the top screen")
+        else:
+            log("  Intro    : scenes not found; the opening cinematic is left alone")
+
         payload = inject.fill_config(payload, meta["symbols"]["OneScreen_Config"],
                                      meta["load_addr"], values)
 
@@ -166,10 +176,11 @@ def patch(rom_bytes: bytes, log=print, auto_battle=True):
             log(f"  Labels   : NOT BUILT - {exc}")
             log("             the battle menu will not be drawn on the top screen")
 
-        apps = regions.check_app_table(arm9)
+        apps = regions.check_app_table(arm9, overlays)
         payload = inject.fill_app_table(payload,
                                         meta["symbols"]["OneScreen_AppTable"],
-                                        meta["load_addr"], apps)
+                                        meta["load_addr"], apps,
+                                        meta["symbols"].get("OneScreen_AppTableEnd", 0))
         for name, callback, _swap, ok in apps:
             log(f"  App      : {name:<12} {callback:#010x} "
                 + ("verified" if ok else

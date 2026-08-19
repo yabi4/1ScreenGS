@@ -55,7 +55,8 @@ CONFIG_FIELDS = ("pad_held", "app_callback", "field_callback",
                  "ov12_lo", "ov12_hi", "battle_state", "dex_exec_orig",
                  "pc_exec_orig", "field_sys", "screens_flipped",
                  "map_exec_orig", "start_menu_task", "oak_exec_orig",
-                 "battle_exec_orig")
+                 "battle_exec_orig", "intro_a_exec", "intro_b_exec",
+                 "intro_c_exec", "intro_clock")
 
 
 def fill_config(payload: bytes, config_addr: int, load_addr: int,
@@ -71,7 +72,7 @@ def fill_config(payload: bytes, config_addr: int, load_addr: int,
 
 
 def fill_app_table(payload: bytes, table_addr: int, load_addr: int,
-                   entries) -> bytes:
+                   entries, table_end: int = 0) -> bytes:
     """Write validated {callback, swap} pairs into the payload's app_table.
 
     `entries` is what regions.check_app_table returned. An entry that failed its
@@ -79,8 +80,16 @@ def fill_app_table(payload: bytes, table_addr: int, load_addr: int,
     leaves that app alone rather than acting on an address we cannot vouch for.
     """
     off = table_addr - load_addr
-    if off < 0 or off + 8 * (len(entries) + 1) > len(payload):
+    need = 8 * (len(entries) + 1)          # every entry, plus the terminator
+    if off < 0 or off + need > len(payload):
         raise ValueError("app_table lies outside the payload")
+    # Bounded by the table's OWN end, not merely by the payload. Writing one
+    # entry too many silently overwrote the code that follows - OneScreen_SetSwap
+    # - and black-screened the game on boot, with nothing to show for it.
+    if table_end and off + need > table_end - load_addr:
+        raise ValueError(
+            f"app_table holds {(table_end - table_addr) // 8 - 1} entries but "
+            f"{len(entries)} were given; add a slot in src/hook.s")
     buf = bytearray(payload)
     # The assembled payload contains French defaults for development builds.
     # Clear every runtime record first so a failed earlier signature cannot

@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased — `V0.2b`
+
+### The opening cinematic plays on the top screen
+
+Three of its scenes showed their content on the lower LCD. They are identified inside
+overlay 60 by their own code, so the fix carries across regions, and each carries its own
+correction — two of them want one engine raised, the third the other.
+
+This is the one place in the patch driven by elapsed time: the halves of a scene that need
+different screens are separated by nothing but a frame counter. The changeovers are taken
+on frames where the screen is black, so being a frame either side cannot be seen.
+Play-tested on US HeartGold as well as French SoulSilver.
+
+### The move relearner opens on the top screen
+
+The Blackthorn tutor's move list set no routing of its own and inherited whatever was
+current — which, since field prompts began holding the world on top, meant the bottom
+screen. It is the first application handled that lives in an **overlay** rather than in
+ARM9, so it is found by searching that overlay for its own code: overlay addresses move
+between regions, and a written-down one would have worked on French alone.
+
+### Saving from the X menu behaves
+
+The save box now takes the screen, and the menu comes back afterwards — drawn, and
+following the D-pad — whether you save or cancel. Saving is the one menu entry that does
+not start an application, so several guards that key off an application change did nothing
+for it. See `docs/FINDINGS.md`.
+
+### Notes
+
+- Adding an entry to the application table is now bounded by the table's own end. It was
+  previously checked only against the size of the payload, so one entry too many overwrote
+  the code that follows and black-screened the game on boot with nothing to show for it.
+
 ## Unreleased — `beta-ui`
 
 Going deeper into single-screen play than rerouting alone allows: compact choices now

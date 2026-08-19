@@ -46,6 +46,10 @@ DEF_MAP_EXEC_ORIG  = 0x021ED8D5 @ the fly / town map app's real exec function
 DEF_START_MENU_TASK = 0x0203BEF1 @ Task_StartMenu; 0 if the patcher cannot vouch
 DEF_OAK_EXEC_ORIG  = 0x021E59B5 @ Oak's speech (overlay 53) real exec function
 DEF_BATTLE_EXEC_ORIG = 0x0203E3AD @ Battle_Main - see OneScreen_BattleExec
+DEF_INTRO_A_EXEC = 0            @ opening cinematic, overlay 60; the patcher
+DEF_INTRO_B_EXEC = 0            @ finds them by signature, 0 = leave it alone
+DEF_INTRO_C_EXEC = 0
+DEF_INTRO_CLOCK = 0
 
 KEY_A       = 0x001
 KEY_B       = 0x002
@@ -314,6 +318,31 @@ PC_HOLD_FRAMES = 2
 @ on the bottom screen in the first place.
 FIELD_RESTORE_FRAMES = 30
 
+@ The cinematic's frame counter, and the frame its first scene stops being
+@ correct. Measured from savestates either side of the changeover: 102 is a
+@ frame where both screens are black, so the switch cannot be seen.
+INTRO_COUNTER_OFF = 4
+INTRO_A_FROM = 102
+
+@ Scene B is not uniform either, which the first attempt got wrong by swapping
+@ the whole of it: its earlier part is already correct and only its tail belongs
+@ on the other engine. As in scene A there is nothing but the counter separating
+@ the two halves, and 1090 is the frame the changeover actually happens on,
+@ captured rather than interpolated - the first guess of 1100 was 10 frames late.
+INTRO_B_FROM = 1090
+
+@ And the last scene, which is correct until 1867 and wrong after it. Its
+@ sequence runs to the end of the intro - the savestate taken at the end has
+@ no application registered at all - so it needs no upper bound.
+INTRO_C_FROM = 1867
+
+@ The last sequence outlives the application that starts it: at its final
+@ frame nothing is registered in the application slot at all, so there is no
+@ scene counter left to test. It is held instead on the tick counter beside
+@ that slot, which keeps running - measured 3728 at the first frame and 3972
+@ at the last, so 244 ticks, about two seconds.
+INTRO_C_HOLD = 244
+
 @ Frames the fly map's exit is waited for. Two is enough to notice the app has
 @ stopped calling the trampoline.
 MAP_LAPSE_FRAMES = 2
@@ -347,6 +376,16 @@ TASK_ENV_OFF = 0x0C
 STARTMENU_STATE_OFF = 0x26
 STARTMENU_EXIT_LO = 12          @ START_MENU_STATE_12: fade out
 STARTMENU_EXIT_HI = 13          @ START_MENU_STATE_13: jump to the exit task
+
+@ Choosing SAUVER does not start an application - the task stays alive in
+@ START_MENU_STATE_SAVE while the save confirmation runs on the bottom screen
+@ (src/start_menu.c:1131, then 6 and 7 in its own switch). So app_callback is
+@ still the field, the X menu path still runs, and the panel went on holding the
+@ world on top while the save box sat underneath it. Drawing stops for these two
+@ states and the caller swaps instead.
+STARTMENU_TAKING = 3            @ START_MENU_STATE_HANDLE_INPUT
+STARTMENU_SAVE_LO = 6
+STARTMENU_SAVE_HI = 7
 
 @ Drawing that menu onto the world instead of swapping to it. Three fields carry
 @ everything needed, and all three were read out of a live savestate with the
@@ -667,6 +706,10 @@ cfg_map_exec_orig:  .word DEF_MAP_EXEC_ORIG
 cfg_start_menu_task: .word DEF_START_MENU_TASK
 cfg_oak_exec_orig:  .word DEF_OAK_EXEC_ORIG
 cfg_battle_exec_orig: .word DEF_BATTLE_EXEC_ORIG
+cfg_intro_a_exec:   .word DEF_INTRO_A_EXEC
+cfg_intro_b_exec:   .word DEF_INTRO_B_EXEC
+cfg_intro_c_exec:   .word DEF_INTRO_C_EXEC
+cfg_intro_clock:    .word DEF_INTRO_CLOCK
 
 pad_held:       .word 0
 pad_new:        .word 0         @ newly pressed this frame
@@ -698,10 +741,16 @@ map_frames:     .word 0         @ counts down once the fly map stops running
 map_pending:    .word 0         @ frames left waiting for the field to pick up
 prev_task:      .word 0         @ last frame's fieldSystem->taskman
 sm_drawn:       .word 0         @ 1 once the X menu's tiles and palettes are in VRAM
+sm_shown:       .word 0         @ 1 while a panel is actually ON SCREEN. Separate from
+                                @ sm_drawn on purpose: that one means "the tiles are
+                                @ uploaded" and gets cleared to force a re-upload, and
+                                @ when the wipe was gated on it too, clearing it left
+                                @ the panel on screen with nothing willing to remove it
 list_ctrl:      .word 0         @ overlay 27's touch controller, or 0 - see FieldMode3
 list_drawn:     .word 0         @ 1 once a list menu's pool is in VRAM
 list_rect:      .word 0         @ x | cols<<8 | rows<<16 of the panel last drawn
 list_hold:      .word 0         @ frames left to keep a panel that stopped confirming
+intro_hold_until: .word 0       @ tick the last intro sequence stops, 0 = idle
 
 @ Kept below the word variables above, not among them: tools/savestate.py reads
 @ that run as a flat array of words and a six-byte table in the middle of it
@@ -750,7 +799,20 @@ app_table:
 evolution_app:
     .word   0x02077271, 0
 
+    @ The move relearner - overlay 68's MoveRelearner_Main. Unlike the two above
+    @ it is not ARM9 code, so the patcher finds it by searching the overlay and
+    @ fills this slot in; overlay code moves between regions and a fixed address
+    @ would only ever be right for one of them. Its move list is on engine B, so
+    @ 1 rather than 0.
+relearner_app:
     .word   0, 0
+
+    @ Terminator. Every slot above is rewritten at patch time, and
+    @ OneScreen_AppTableEnd bounds that write - one entry too many used to run
+    @ straight into OneScreen_SetSwap below and black-screen the game on boot.
+    .word   0, 0
+    .global OneScreen_AppTableEnd
+OneScreen_AppTableEnd:
 
 
 @ ---------------------------------------------------------------------------
@@ -2331,6 +2393,21 @@ OneScreen_StartMenu:
     ldr     r4, [r4, #TASK_ENV_OFF] @ -> StartMenuTaskData
     cmp     r4, #0
     beq     57f
+    ldrh    r0, [r4, #STARTMENU_STATE_OFF]
+    subs    r0, #STARTMENU_SAVE_LO
+    cmp     r0, #(STARTMENU_SAVE_HI - STARTMENU_SAVE_LO)
+    bhi     36f
+    @ Saving. Let the caller show the save box instead - and forget the upload,
+    @ because that screen takes these tiles and this palette for itself. Without
+    @ this the panel came back BLANK afterwards rather than garbled: the tilemap
+    @ still pointed at tiles the save screen had since cleared. Every other entry
+    @ on this menu is a separate application, so Poll's own app change already
+    @ cleared the flag for those - which is why only SAUVER showed it.
+    ldr     r0, =sm_drawn
+    movs    r1, #0
+    str     r1, [r0]
+    b       57f
+36:
 
     movs    r0, #SM_RECORD_OFF
     adds    r7, r7, r0              @ -> the panel's record
@@ -2479,7 +2556,10 @@ OneScreen_StartMenu:
 68: adds    r6, #1
     b       75b
 
-59: ldr     r0, [r7, #SM_FRAME_BASE]    @ into the game's shadow tilemap too, or
+59: ldr     r0, =sm_shown               @ a panel is on screen from here until wiped
+    movs    r1, #1
+    str     r1, [r0]
+    ldr     r0, [r7, #SM_FRAME_BASE]    @ into the game's shadow tilemap too, or
     movs    r1, #SM_FRAME_ROWS          @ its next commit erases the panel
     ldrb    r1, [r7, r1]
     movs    r2, #SM_FRAME_COLS
@@ -3076,12 +3156,14 @@ OneScreen_StartMenuWipe:
     ldr     r1, =LABEL_MAGIC
     cmp     r0, r1
     bne     67f
-    ldr     r0, =sm_drawn
+    ldr     r0, =sm_shown
     ldr     r1, [r0]
     cmp     r1, #0
     beq     67f                     @ nothing of ours is on screen
     movs    r1, #0
     str     r1, [r0]
+    ldr     r0, =sm_drawn           @ and re-upload next time: whatever ran in
+    str     r1, [r0]                @ between may have taken these tiles
     movs    r0, #SM_RECORD_OFF
     adds    r7, r7, r0
     ldr     r1, [r7, #SM_FRAME_BASE]    @ the border's rect covers the cells too
@@ -3255,6 +3337,42 @@ OneScreen_FieldYesNoWipe:
     bl      OneScreen_BattleWipe
     bl      OneScreen_BattleMenu
 51: pop     {r3, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ int OneScreen_MenuTaking(void)
+@ 1 when the game's own start menu task is up and TAKING INPUT.
+@
+@ Deliberately narrower than "the menu exists". START_MENU_STATE_HANDLE_INPUT is
+@ the only state where the panel should be on screen: pressing X or B moves the
+@ menu to its close state in the same frame the game reads the press, so testing
+@ for it cannot re-open a menu the player just dismissed.
+@ ---------------------------------------------------------------------------
+    .thumb_func
+OneScreen_MenuTaking:
+    push    {r4, lr}
+    bl      OneScreen_TaskMan
+    cmp     r0, #0
+    beq     86f
+    movs    r4, r0
+    ldr     r0, [r4, #TASK_FUNC_OFF]
+    ldr     r1, =cfg_start_menu_task
+    ldr     r1, [r1]
+    cmp     r1, #0
+    beq     86f
+    cmp     r0, r1
+    bne     86f
+    ldr     r0, [r4, #TASK_ENV_OFF]
+    cmp     r0, #0
+    beq     86f
+    ldrh    r0, [r0, #STARTMENU_STATE_OFF]
+    cmp     r0, #STARTMENU_TAKING
+    bne     86f
+    movs    r0, #1
+    pop     {r4, pc}
+86: movs    r0, #0
+    pop     {r4, pc}
     .align  2
     .pool
 
@@ -3505,7 +3623,20 @@ OneScreen_Poll:
     @ Keep the panel on the world while the menu is open. Drawn every frame, not
     @ once: the field redraws underneath it, and coming back from a sub-app
     @ rebuilds the menu task entirely.
-15: ldr     r0, [r5]
+    @ Re-arm from the game's own state. Saving tears the menu down and builds it
+    @ again, which cleared this latch and left the panel gone for the rest of the
+    @ menu's life - saving looked fine only because the menu closes afterwards
+    @ anyway, while cancelling came back to a menu we had stopped drawing.
+    @
+    @ This has to sit AFTER the label: the B path above branches to 15 rather
+    @ than falling through, so the first version of it was never reached at all.
+15: bl      OneScreen_MenuTaking
+    cmp     r0, #0
+    beq     18f
+    movs    r0, #1
+    str     r0, [r5]
+
+18: ldr     r0, [r5]
     cmp     r0, #0
     beq     16f
 
@@ -3530,9 +3661,12 @@ OneScreen_Poll:
     str     r0, [r1]
     bl      OneScreen_StartMenu     @ draw it onto the world; no swap at all
     cmp     r0, #0
-    bne     19f
-    movs    r0, #1                  @ ...unless it is a grid we cannot reproduce
-    bl      OneScreen_SetSwap       @ (Safari, the Bug Contest): swap, as before
+    beq     17f
+    movs    r0, #0                  @ the panel is on engine A - hold it there,
+    bl      OneScreen_SetSwap       @ so coming back from SAUVER returns here
+    b       19f
+17: movs    r0, #1                  @ a grid we cannot reproduce (Safari, the Bug
+    bl      OneScreen_SetSwap       @ Contest), or the save box: show it
     b       19f
 
     @ No menu of ours is up. If an app just handed the field back, the layout it
@@ -3555,6 +3689,143 @@ OneScreen_Poll:
     .align  2
     .pool
 
+
+@ ---------------------------------------------------------------------------
+@ void OneScreen_Intro(void)
+@ Put the opening cinematic's two misrouted scenes on the right screen.
+@
+@ The intro is overlay 60 running four scene functions in turn. Two of them show
+@ their content on the lower LCD, and they need OPPOSITE corrections - scene B
+@ wants engine B raised, the tail of scene A wants engine A raised - so each
+@ carries its own value rather than a shared "swap".
+@
+@ Scene A is the awkward one. Its first half is correct and its second half is
+@ not, and the two are indistinguishable: diffing the whole 512-byte scene block
+@ between a good frame and a bad one leaves exactly ONE differing byte, a frame
+@ counter. So this is the one place in the patch driven by elapsed time. That is
+@ defensible for a cinematic, whose scenes really are defined by time rather than
+@ by state, but it is a hardcoded number and worth knowing about. The changeover
+@ is taken on a frame where both screens are black, so being a frame out either
+@ way is invisible.
+@
+@ Everything fails closed: no resolved address, no data pointer, or a pointer
+@ outside main RAM, and the intro simply plays as it did before.
+@ ---------------------------------------------------------------------------
+    .global OneScreen_Intro
+    .thumb_func
+OneScreen_Intro:
+    push    {r4, r5, r6, lr}
+    ldr     r0, =cfg_app_callback
+    ldr     r4, [r0]
+    cmp     r4, #0
+    beq     99f
+
+    @ The tick counter beside the application slot. The last sequence runs past
+    @ the end of the intro application, so it is held on this rather than on a
+    @ scene counter - by then there is no scene left to ask.
+    movs    r6, #0
+    ldr     r0, =cfg_intro_clock
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     90f
+    ldr     r6, [r0]
+    ldr     r0, =intro_hold_until
+    ldr     r1, [r0]
+    cmp     r1, #0
+    beq     90f
+    ldr     r2, =cfg_field_sys      @ the game has started: the intro is long over
+    ldr     r2, [r2]
+    cmp     r2, #0
+    beq     88f
+    ldr     r2, [r2]
+    cmp     r2, #0
+    bne     89f
+88: cmp     r6, r1
+    bhs     89f
+    movs    r0, #0                  @ still inside it: hold engine A up
+    bl      OneScreen_SetSwap
+    b       99f
+89: movs    r1, #0
+    str     r1, [r0]                @ expired
+
+90: ldr     r5, [r4]                @ the scene function running now
+    cmp     r5, #0
+    beq     99f
+
+    ldr     r0, =cfg_intro_a_exec
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     91f
+    cmp     r5, r0
+    bne     91f
+    ldr     r1, =INTRO_A_FROM
+    bl      OneScreen_IntroPast
+    cmp     r0, #0
+    beq     99f
+    movs    r0, #0                  @ raise engine A
+    bl      OneScreen_SetSwap
+    b       99f
+
+91: ldr     r0, =cfg_intro_b_exec
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     92f
+    cmp     r5, r0
+    bne     92f
+    ldr     r1, =INTRO_B_FROM
+    bl      OneScreen_IntroPast
+    cmp     r0, #0
+    beq     99f
+    movs    r0, #1                  @ raise engine B
+    bl      OneScreen_SetSwap
+    b       99f
+
+92: ldr     r0, =cfg_intro_c_exec
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     99f
+    cmp     r5, r0
+    bne     99f                     @ not a scene we correct: leave it alone
+    ldr     r1, =INTRO_C_FROM
+    bl      OneScreen_IntroPast
+    cmp     r0, #0
+    beq     99f
+    cmp     r6, #0
+    beq     93f                     @ no clock: correct the scene, but no hold
+    ldr     r0, =intro_hold_until   @ arm the hold, so the sequence keeps the
+    ldr     r1, =INTRO_C_HOLD       @ screen after the application has gone
+    adds    r1, r6, r1
+    str     r1, [r0]
+93: movs    r0, #0                  @ raise engine A
+    bl      OneScreen_SetSwap
+99: pop     {r4, r5, r6, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ int OneScreen_IntroPast(r1 = frame) - 1 once this scene has run that far.
+@ r4 must hold the application slot. Fails closed on any unusable pointer.
+@ ---------------------------------------------------------------------------
+    .thumb_func
+OneScreen_IntroPast:
+    push    {r4, r5, lr}
+    movs    r5, r1
+    ldr     r0, [r4, #4]            @ the scene's own data block
+    movs    r1, #INTRO_COUNTER_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     87f
+    ldr     r0, [r4, #4]
+    ldr     r0, [r0, #INTRO_COUNTER_OFF]
+    cmp     r0, r5
+    blo     87f
+    movs    r0, #1
+    pop     {r4, r5, pc}
+87: movs    r0, #0
+    pop     {r4, r5, pc}
+    .align  2
+    .pool
+
 @ ---------------------------------------------------------------------------
 @ void OneScreen_Frame(void)
 @ Replaces `bl 0x0200110C` at 0x02000DB0 in the main loop: run the original
@@ -3568,6 +3839,7 @@ OneScreen_Frame:
     ldr     r3, =ORIG_LOOP_FN
     blx     r3
     bl      OneScreen_UpdatePad
+    bl      OneScreen_Intro
     bl      OneScreen_AppIntent
 .ifndef DISABLE_AUTO_BATTLE
     bl      OneScreen_AutoBattle

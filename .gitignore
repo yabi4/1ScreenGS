@@ -1,0 +1,31 @@
+# Never commit game data. This repository ships a patcher, not a ROM.
+*.nds
+*.sav
+*.sav.*
+*.mln
+*.ml[0-9]
+*.dsv
+roms/
+out/
+
+# Build artefacts
+build/
+# The GUI's PyInstaller output. Kept out of build/, which already holds unpacked
+# ROM modules.
+dist-gui/
+*.o
+*.elf
+*.bin
+!onescreen/payload/hook.bin
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
